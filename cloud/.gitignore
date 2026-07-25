@@ -1,0 +1,16 @@
+# 절대 올리면 안 되는 것 (API 키·비밀번호)
+.env
+*.env
+
+# 파이썬 부산물
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 로컬 실행 흔적
+update_log.txt
+backup/
+
+# 로컬 대용량 (원하면 주석 해제해서 제외)
+# *.parquet
