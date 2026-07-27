@@ -255,24 +255,33 @@ def _isotonic(vals, wts):
 
 def analyze(idx):
     sig = signals_for(idx)
-    bull_cols, ic, direction, meta = {}, {}, {}, {}
+    bull_cols, ic, direction, meta, _nobs = {}, {}, {}, {}, {}
     y12 = fwd(idx, 12)
     for n, s, base, fmt, states in [(t[0], t[1], t[2], t[3], t[4]) for t in sig]:
         xy = pd.concat([ez(s) * base, y12], axis=1, sort=True).dropna()
-        r = xy.iloc[:, 0].corr(xy.iloc[:, 1]) if len(xy) > 40 else 0.0
+        # 유효 표본이 짧으면(예: 새로 추가됐거나 과거가 짧은 계열) IC를 신뢰할 수 없다.
+        # 이런 신호는 분석(가중치)에서 빼되, 비교차트에는 그대로 남긴다.
+        #   · 40개월 미만: IC 계산 불가 → 0
+        #   · 60개월 미만: IC는 참고로 보여주되 가중치 후보에서 제외(아래 MIN_OBS)
+        n_obs = len(xy)
+        r = xy.iloc[:, 0].corr(xy.iloc[:, 1]) if n_obs > 40 else 0.0
         eff = base if r >= 0 else -base          # 실제 작동방향(IC 부호로 확정)
         bull_cols[n] = ez(s) * eff
         ic[n] = abs(float(r))                    # 단변량 예측력(참고용)
         direction[n] = (eff, eff != base)        # (강세방향, 역발상여부)
         meta[n] = (s, fmt, states)
+        _nobs[n] = n_obs
     bull = pd.DataFrame(bull_cols).ffill(limit=3)
 
     # 예측력 없는 신호(억제변수) 제외: 단변량 |IC| < 0.10 이면 가중치 0.
     #   이렇게 하면 "국고채·PER이 코스피를 예측한다"는 해석 오류와 과최적화를 동시에 막는다.
-    IC_MIN = 0.10
-    cols = [c for c in bull.columns if ic[c] >= IC_MIN]
+    # 표본이 60개월 미만인 신호도 IC 신뢰도가 낮아 가중치 후보에서 제외한다
+    #   (차트에는 남지만 분석엔 안 들어간다).
+    IC_MIN, MIN_OBS = 0.10, 60
+    cols = [c for c in bull.columns if ic[c] >= IC_MIN and _nobs.get(c, 0) >= MIN_OBS]
     if len(cols) < 3:                                  # 너무 적으면 완화
-        cols = sorted(bull.columns, key=lambda c: -ic[c])[:5]
+        cols = sorted([c for c in bull.columns if _nobs.get(c, 0) >= MIN_OBS],
+                      key=lambda c: -ic[c])[:5]
     w = _ridge_weights(bull, y12, cols)               # 다변량(중복 제거)
     if w is None:                                      # 실패 시 단변량 |IC| 폴백
         w = pd.Series({c: ic[c] for c in cols}); w = w / w.sum() if w.sum() else w

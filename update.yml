@@ -1,11 +1,20 @@
-name: 대시보드 자동 갱신
+name: 대시보드 생성 (절충안)
 
-# 실행 조건
+# KRX는 해외 서버(GitHub)에서 접속이 막히므로, 데이터 수집은 집 PC가 맡고
+# 클라우드는 '대시보드 생성 + 배포'만 한다.
+#   집 PC:  수집 → parquet 커밋/푸시
+#   클라우드: 푸시 감지 → build_dashboard.py → GitHub Pages 배포
+#
+# ECOS·FRED는 해외에서도 되는 편이라, 원하면 아래 두 단계의 주석을 풀어
+# 그 둘만 클라우드에서 갱신할 수도 있다.
+
 on:
-  schedule:
-    # UTC 기준. 09:30 UTC = 한국시간 18:30 (장마감 후)
-    - cron: '30 9 * * 1-5'
-  workflow_dispatch:          # 👈 깃허브 화면에서 버튼으로 수동 실행 (핸드폰에서도 가능)
+  push:
+    paths:                      # parquet이 새로 올라오면 자동 재생성
+      - '*.parquet'
+      - '*.csv'
+      - 'build_dashboard.py'
+  workflow_dispatch:            # 손으로도 실행 (순이익 입력 가능)
     inputs:
       ni_fy1:
         description: '올해 예상순이익(조원) 예: 606 · 비워두면 기존값 유지'
@@ -21,17 +30,16 @@ on:
         default: ''
 
 permissions:
-  contents: write             # parquet/대시보드 커밋용
+  contents: write
 
 concurrency:
-  group: dashboard-update
+  group: dashboard-build
   cancel-in-progress: false
 
 jobs:
-  update:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 15
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v4
@@ -45,35 +53,18 @@ jobs:
       - name: 패키지 설치
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas numpy pyarrow
 
-      # ── 수집 ──────────────────────────────────────────
-      # 하나가 실패해도 나머지는 계속 진행 (continue-on-error)
-      - name: KRX 수집
-        continue-on-error: true
-        env:
-          KRX_ID: ${{ secrets.KRX_ID }}
-          KRX_PW: ${{ secrets.KRX_PW }}
-        run: python collect_krx.py
+      # ── (선택) 해외에서도 되는 매크로만 클라우드에서 갱신하고 싶으면 주석 해제 ──
+      # - name: ECOS 수집
+      #   continue-on-error: true
+      #   env: { ECOS_KEY: '${{ secrets.ECOS_KEY }}' }
+      #   run: pip install requests python-dotenv && python collect_ecos.py
+      # - name: FRED 수집
+      #   continue-on-error: true
+      #   env: { FRED_KEY: '${{ secrets.FRED_KEY }}' }
+      #   run: pip install requests python-dotenv && python collect_fred.py
 
-      - name: ECOS 수집
-        continue-on-error: true
-        env:
-          ECOS_KEY: ${{ secrets.ECOS_KEY }}
-        run: python collect_ecos.py
-
-      - name: FRED 수집
-        continue-on-error: true
-        env:
-          FRED_KEY: ${{ secrets.FRED_KEY }}
-        run: python collect_fred.py
-
-      - name: 수급(투자자별) 수집
-        continue-on-error: true
-        run: python collect_flow.py
-
-      # ── 예상순이익/예상PER 반영 (입력이 있을 때만) ──────────
-      # 순이익 두 칸 중 하나라도 넣으면 12개월 가중평균으로 선행PER 계산.
       - name: 예상순이익 반영
         if: ${{ github.event.inputs.ni_fy1 != '' || github.event.inputs.ni_fy2 != '' }}
         run: |
@@ -84,8 +75,7 @@ jobs:
           p1 = p2 = ""
           if os.path.exists("fwd_ni.csv"):
               rows = list(csv.DictReader(open("fwd_ni.csv", encoding="utf-8")))
-              if rows:
-                  p1, p2 = rows[-1].get("FY1",""), rows[-1].get("FY2","")
+              if rows: p1, p2 = rows[-1].get("FY1",""), rows[-1].get("FY2","")
           a1, a2 = (n1 or p1), (n2 or p2)
           if a1 and a2:
               subprocess.run([sys.executable,"update_fwd_per.py","--ni",a1,a2], check=True)
@@ -97,30 +87,27 @@ jobs:
         if: ${{ github.event.inputs.ni_fy1 == '' && github.event.inputs.ni_fy2 == '' && github.event.inputs.fwd_per != '' }}
         run: python update_fwd_per.py "${{ github.event.inputs.fwd_per }}"
 
-      # ── 대시보드 생성 ──────────────────────────────────
       - name: 대시보드 생성
         run: |
           python build_dashboard.py
           mkdir -p docs
           cp dashboard.html docs/index.html
 
-      # ── 결과 저장 (데이터가 다음 실행에 이어짐) ─────────────
       - name: 커밋 & 푸시
         run: |
           git config user.name  "dashboard-bot"
           git config user.email "actions@github.com"
-          git add -A *.parquet *.csv docs/index.html dashboard.html 2>/dev/null || true
+          git add -A docs/index.html dashboard.html *.parquet *.csv 2>/dev/null || true
           if git diff --staged --quiet; then
-            echo "변경 없음 - 커밋 생략"
+            echo "변경 없음"
           else
-            git commit -m "자동 갱신 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
+            git commit -m "대시보드 갱신 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
             git push
           fi
 
       - name: 요약
         run: |
-          echo "### 갱신 완료 :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          echo "### 대시보드 생성 완료 :white_check_mark:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "실행 시각: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "대시보드: https://\${{ github.repository_owner }}.github.io/\${{ github.event.repository.name }}/" >> $GITHUB_STEP_SUMMARY
+          echo "데이터는 집 PC가 올린 parquet 기준입니다." >> $GITHUB_STEP_SUMMARY
+          echo "https://\${{ github.repository_owner }}.github.io/\${{ github.event.repository.name }}/" >> $GITHUB_STEP_SUMMARY
