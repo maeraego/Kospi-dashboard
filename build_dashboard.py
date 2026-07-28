@@ -128,7 +128,7 @@ def signals_for(idx):
     #   · M2 YoY: 유동성 증가율. 대표적 경기 선행지표(돈이 풀리면 자산가격 상방).
     #   · M2/M1 비율: 유동성 회전속도. 낮으면 돈이 안 돎(위험회피), 높으면 활발.
     #   · 시가총액/M2: 시장이 통화량 대비 얼마나 비싼가(버핏지표의 통화량 버전).
-    _m2y = df['M2'].pct_change(12) * 100 if 'M2' in df else None
+    _m2y = df['M2'].pct_change(12, fill_method=None) * 100 if 'M2' in df else None
     _m21 = (df['M2'] / df['M1']) if ('M2' in df and 'M1' in df) else None
     _mc_m2 = (df[f'{idx}_시총'] / df['M2']) if ('M2' in df and f'{idx}_시총' in df) else None
     # [주의] 경기선행종합지수에는 코스피가 구성항목으로 들어간다.
@@ -1047,7 +1047,7 @@ comp = {
     '수출금액지수': df.get('수출금액지수'), '코스닥 변동성': df.get('KOSDAQ_변동성'),
     'M1': df.get('M1'), 'M2': df.get('M2'),
     'M2/M1 비율': (df['M2'] / df['M1']) if ('M2' in df and 'M1' in df) else None,
-    'M2 증가율': df['M2'].pct_change(12) * 100 if 'M2' in df else None,
+    'M2 증가율': df['M2'].pct_change(12, fill_method=None) * 100 if 'M2' in df else None,
     '시가총액/M2': (df['KOSPI_시총'] / df['M2']) if ('M2' in df and 'KOSPI_시총' in df) else None,
     '코스피 종합점수': AK['sc'], '코스닥 종합점수': AQ['sc'],
 }
