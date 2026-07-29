@@ -424,7 +424,7 @@ def analyze(idx):
                kmax=KMAX, kmin=KMIN)
 
     return dict(sc=sc, cur=cur, pct=pct, asof=asof, reads=reads, tbl=tbl, cbin=cbin, bet=bet,
-                proj=proj,
+                proj=proj, idx=idx,
                 ic=ic, w={n: float(w[n]) for n in w.index}, direction=direction,
                 px=float(df[f'{idx}_종가'].dropna().iloc[-1]))
 
@@ -451,7 +451,7 @@ def dist_strip(sc, cur, color):
             f'<text x="{nx:.1f}" y="9" fill="{color}" font-size="12" text-anchor="middle" '
             f'font-family="ui-monospace,monospace" font-weight="600">지금</text></svg>')
 
-def render_signals(reads):
+def render_signals(reads, idx_key=''):
     zmax = max((abs(r[5]) for r in reads if r[5] is not None), default=1.5)
     out = ''
     for i, (n, desc, fmt, rv, pb, z, wt, states) in enumerate(reads, 1):
@@ -459,9 +459,14 @@ def render_signals(reads):
         elif pb < 1:     loc = '역대 최저 수준'
         elif pb >= 50:   loc = f'역대 상위 {100-pb:.0f}%'
         else:            loc = f'역대 하위 {pb:.0f}%'
+        # 체크박스: 이 신호를 종합점수에서 뺐다 넣었다 (data-속성에 기여도 저장)
+        z_attr = '' if z is None else f'{z:.4f}'
+        cb = (f'<input type="checkbox" class="sigck" checked '
+              f'data-idx="{idx_key}" data-w="{wt:.6f}" data-z="{z_attr}" '
+              f'onchange="recalc(\'{idx_key}\')">')
         num = f'<span class="sig-i">{i}</span>'
         if z is None:
-            out += (f'<div class="sig"><div class="sig-h">{num}<span class="sig-n">{n}</span>'
+            out += (f'<div class="sig"><div class="sig-h"><label class="sig-ck">{cb}</label>{num}<span class="sig-n">{n}</span>'
                     f'<span class="sig-w">가중 {wt*100:.0f}%</span></div>'
                     f'<div class="sig-read">현재 {fmt(rv)} · {loc}</div>'
                     f'<div class="track"><span class="mid"></span></div>'
@@ -471,7 +476,7 @@ def render_signals(reads):
         state = states[0] if pb >= 50 else states[1]
         mag = '강한' if abs(z) >= 1 else ('다소' if abs(z) >= 0.4 else '약한')
         width = min(abs(z)/zmax, 1)*50; side = 'left:50%' if pos else 'right:50%'
-        out += (f'<div class="sig"><div class="sig-h">{num}<span class="sig-n">{n}</span>'
+        out += (f'<div class="sig"><div class="sig-h"><label class="sig-ck">{cb}</label>{num}<span class="sig-n">{n}</span>'
                 f'<span class="sig-w">가중 {wt*100:.0f}%</span></div>'
                 f'<div class="sig-read">현재 <b>{fmt(rv)}</b> · {loc} · {state}</div>'
                 f'<div class="track"><span class="mid"></span>'
@@ -553,18 +558,23 @@ def section(label, a):
                      f'<div class="proj-cap">현재 종합점수 {a["cur"]:+.2f}({rl})가 놓인 국면에서, '
                      f'과거 12개월 실제 수익 분포를 현재가 {pj["px"]:,.0f}에 적용한 범위입니다. '
                      f'예측이 아니라 과거 통계 분포이며, 꼬리 위험이 있습니다.</div></div>')
-    return (f'<div class="sec"><div class="sec-head">'
+    ik = a['idx']
+    # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
+    _scdist = json.dumps([round(float(v), 4) for v in a['sc'].dropna().tolist()])
+    return (f'<div class="sec" data-idx="{ik}"><div class="sec-head">'
             f'<div class="sec-t">{label} <span class="sec-px">{a["px"]:,.1f}</span></div>'
-            f'<div class="sec-score"><span class="ss" style="color:{rc}">{a["cur"]:+.2f}</span>'
-            f'<span class="sr" style="color:{rc}">{rl}</span>'
-            f'<span class="sp">백분위 {a["pct"]*100:.0f}%</span></div></div>'
+            f'<div class="sec-score"><span class="ss" id="ss-{ik}" style="color:{rc}">{a["cur"]:+.2f}</span>'
+            f'<span class="sr" id="sr-{ik}" style="color:{rc}">{rl}</span>'
+            f'<span class="sp" id="sp-{ik}">백분위 {a["pct"]*100:.0f}%</span></div></div>'
+            f'<script>window.SCDIST=window.SCDIST||{{}};window.SCDIST["{ik}"]={_scdist};'
+            f'window.SCBASE=window.SCBASE||{{}};window.SCBASE["{ik}"]={a["cur"]:.4f};</script>'
             f'<div class="expbar"><span class="exp-lab">이 국면의 향후 1년 실측</span>'
             f'<span class="exp-m" style="color:{mcol}">평균 {m12:+.0%}</span>'
             f'<span class="exp-w">상승확률 {w12:.0%}</span>'
             f'<span class="exp-n">(과거 같은 점수구간 n={a["tbl"].get("n12", "")})</span></div>'
             f'{proj_html}'
             f'<div class="strip">{dist_strip(a["sc"], a["cur"], rc)}</div>'
-            f'<div class="cols"><div class="card"><h2>신호 분해</h2>{render_signals(a["reads"])}</div>'
+            f'<div class="cols"><div class="card"><h2>신호 분해</h2>{render_signals(a["reads"], a["idx"])}</div>'
             f'<div class="card"><h2>현재 국면의 기대수익</h2>{render_forward(a["tbl"], a["cbin"], a["sc"])}</div></div></div>')
 
 def kelly_backtest(idx='KOSPI', start='2010-12-31', H=12):
@@ -1067,6 +1077,7 @@ _SIG2COL2 = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '한국VIX': '한국VIX',
              'VIX 급등(YoY)': 'VIX 급등(YoY)', '기준금리 YoY': '기준금리 YoY',
              '기준금리': '기준금리',
              '수출 YoY': '순수출', '예상PER 괴리': '예상PER',
+             '시가총액/M2': '시가총액/M2', 'M2 증가율(YoY)': 'M2 증가율', 'M2/M1 비율': 'M2/M1 비율',
              '일드갭 (예상PER)': '일드갭', '일드갭 (후행PER)': '일드갭'}
 DATA['ic'] = {}
 for _n in AK['ic']:
@@ -1084,6 +1095,7 @@ SIG2COL = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '한국VIX': '한국VIX',
            'VIX 급등(YoY)': 'VIX 급등(YoY)', '기준금리 YoY': '기준금리 YoY',
            '기준금리': '기준금리',
            '수출 YoY': '순수출', '예상PER 괴리': '예상PER',
+             '시가총액/M2': '시가총액/M2', 'M2 증가율(YoY)': 'M2 증가율', 'M2/M1 비율': 'M2/M1 비율',
            '일드갭 (예상PER)': '일드갭', '일드갭 (후행PER)': '일드갭'}
 _ordered, _seen = [('▸ 코스피 종합점수', '코스피 종합점수'), ('▸ 코스닥 종합점수', '코스닥 종합점수')], {'코스피 종합점수', '코스닥 종합점수'}
 for _i, _r in enumerate(AK['reads'], 1):          # 코스피 신호분해 순서 그대로
@@ -1150,6 +1162,9 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .card{{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}}
 .card h2{{font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);margin:0 0 14px;font-weight:600}}
 .sig{{margin-bottom:10px;padding:11px 13px;background:#121a28;border:1px solid #222d42;border-radius:10px}}
+.sig-ck{{display:inline-flex;align-items:center;cursor:pointer;flex:none}}
+.sig-ck input{{width:15px;height:15px;accent-color:#4a9fd4;cursor:pointer;margin:0}}
+.sig:has(.sigck:not(:checked)){{opacity:.4}}
 .sig-h{{display:flex;align-items:baseline;gap:8px}}
 .sig-i{{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;flex:none;
   background:#1e293c;border:1px solid #2f3d56;border-radius:5px;font-family:var(--mono);font-size:11px;color:#8b98ab}}
@@ -1323,6 +1338,41 @@ footer{{margin-top:8px;color:#5b6678;font-size:11.5px;line-height:1.6;border-top
 <script>
 const DATA = {data_json};
 const D = DATA.dates, S = DATA.series;
+
+// ── 체크박스로 신호를 뺐다 넣었다 하며 종합점수를 즉시 재계산 ──
+//   종합점수 = Σ(z × 가중치). 체크 해제된 신호는 빼고 남은 가중치를 재정규화.
+//   백분위·국면 라벨도 과거 점수분포(SCDIST)에 다시 대입해 갱신한다.
+function _regimeLabel(pct){{
+  if(pct>=0.80) return ['매우 유리','#3fb37f'];
+  if(pct>=0.60) return ['유리','#5fb37f'];
+  if(pct>=0.40) return ['중립','#b0b8c4'];
+  if(pct>=0.20) return ['불리','#e0913b'];
+  return ['매우 불리','#e5484d'];
+}}
+function recalc(idx){{
+  const boxes=[...document.querySelectorAll('.sigck[data-idx="'+idx+'"]')];
+  let score=0, wsum=0, wtot=0;
+  boxes.forEach(b=>{{
+    const w=parseFloat(b.dataset.w)||0, z=b.dataset.z===''?null:parseFloat(b.dataset.z);
+    if(z===null) return;
+    wtot+=w;
+    if(b.checked){{ score+=z*w; wsum+=w; }}
+  }});
+  if(wsum>0) score = score * (wtot/wsum);
+  const dist=(window.SCDIST&&window.SCDIST[idx])||[];
+  let pct=0.5;
+  if(dist.length){{ pct=dist.filter(v=>v<score).length/dist.length; }}
+  const [lab,col]=_regimeLabel(pct);
+  const ss=document.getElementById('ss-'+idx), sr=document.getElementById('sr-'+idx), sp=document.getElementById('sp-'+idx);
+  if(ss){{ ss.textContent=(score>=0?'+':'')+score.toFixed(2); ss.style.color=col; }}
+  if(sr){{ sr.textContent=lab; sr.style.color=col; }}
+  if(sp){{
+    const base=(window.SCBASE&&window.SCBASE[idx]);
+    const diff=(base!=null)?(score-base):0;
+    sp.textContent='백분위 '+Math.round(pct*100)+'%'+(Math.abs(diff)>0.001?'  (기본 대비 '+(diff>=0?'+':'')+diff.toFixed(2)+')':'');
+  }}
+}}
+
 function niceMinMax(a){{let v=a.filter(x=>x!=null);let mn=Math.min(...v),mx=Math.max(...v);
   let pad=(mx-mn)*0.08||1;return [mn-pad,mx+pad];}}
 function draw(){{

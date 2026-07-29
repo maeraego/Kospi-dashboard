@@ -226,3 +226,15 @@ To https://github.com/maeraego/Kospi-dashboard.git
    a8e8640..a0d5e75  main -> main
 Pushed new data. 
 Run finished: 2026-07-28 20:46:06.11 
+ 
+============================================ 
+Run started: 2026-07-28 21:41:48.26 
+C:\python312\Lib\site-packages\pykrx\website\krx\market\wrap.py:1240: FutureWarning: Downcasting behavior in `replace` is deprecated and will be removed in a future version. To retain the old behavior, explicitly call `result.infer_objects(copy=False)`. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  df = df.replace("^-$", 0, regex=True)
+C:\python312\Lib\site-packages\pykrx\website\krx\market\wrap.py:1240: FutureWarning: Downcasting behavior in `replace` is deprecated and will be removed in a future version. To retain the old behavior, explicitly call `result.infer_objects(copy=False)`. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  df = df.replace("^-$", 0, regex=True)
+C:\python312\Lib\site-packages\pykrx\website\krx\market\wrap.py:1240: FutureWarning: Downcasting behavior in `replace` is deprecated and will be removed in a future version. To retain the old behavior, explicitly call `result.infer_objects(copy=False)`. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  df = df.replace("^-$", 0, regex=True)
+C:\python312\Lib\site-packages\pykrx\website\krx\market\wrap.py:1240: FutureWarning: Downcasting behavior in `replace` is deprecated and will be removed in a future version. To retain the old behavior, explicitly call `result.infer_objects(copy=False)`. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+  df = df.replace("^-$", 0, regex=True)
+^C

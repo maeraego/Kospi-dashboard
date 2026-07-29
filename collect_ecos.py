@@ -134,6 +134,12 @@ if _cash is not None and _dd is not None and _mmda is not None:
     S["M1"] = (_cash.add(_dd, fill_value=0).add(_mmda, fill_value=0)).rename("M1")
     print(f"  · M1(합성)       <- 현금통화+요구불예금+수시입출식  n={S['M1'].dropna().shape[0]}")
 S["M2"] = collect("M2광의통화", _M2TBL, "M", [r"^M2\b", r"M2\(", r"광의통화"])
+# ECOS M2는 '십억원' 단위, KRX 시가총액은 '조원' 단위.
+# 시가총액/M2 비율이 맞으려면 M2도 조원으로 통일한다 (÷1000).
+if S.get("M1") is not None:
+    S["M1"] = S["M1"] / 1000.0
+if S.get("M2") is not None:
+    S["M2"] = S["M2"] / 1000.0
 
 # ── 정리/파생 ──
 S = {k: v for k, v in S.items() if v is not None}
