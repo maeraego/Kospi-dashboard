@@ -290,9 +290,17 @@ def analyze(idx):
     # 표본이 60개월 미만인 신호도 IC 신뢰도가 낮아 가중치 후보에서 제외한다
     #   (차트에는 남지만 분석엔 안 들어간다).
     IC_MIN, MIN_OBS = 0.10, 60
-    cols = [c for c in bull.columns if ic[c] >= IC_MIN and _nobs.get(c, 0) >= MIN_OBS]
+    # 참고지표(가중치 계산에서 제외, 차트에는 유지):
+    #   시가총액/M2 — 단독 IC는 0.52로 높지만 PBR과 상관 0.84로 사실상 중복.
+    #   실측: 이 신호를 빼도 표본외 IC 0.615→0.609 (기여 0.006). 게다가 M2가 2003년~로
+    #   표본이 짧고, 최근 3년 +199% 급등해 z-score가 극단으로 치솟아 판정을 왜곡한다.
+    #   → 통화량 대비 밸류는 차트로 관찰하되, 예측 가중은 PBR·예상PER에 맡긴다.
+    REF_ONLY = {'시가총액/M2'}
+    cols = [c for c in bull.columns
+            if ic[c] >= IC_MIN and _nobs.get(c, 0) >= MIN_OBS and c not in REF_ONLY]
     if len(cols) < 3:                                  # 너무 적으면 완화
-        cols = sorted([c for c in bull.columns if _nobs.get(c, 0) >= MIN_OBS],
+        cols = sorted([c for c in bull.columns
+                       if _nobs.get(c, 0) >= MIN_OBS and c not in REF_ONLY],
                       key=lambda c: -ic[c])[:5]
     w = _ridge_weights(bull, y12, cols)               # 다변량(중복 제거)
     if w is None:                                      # 실패 시 단변량 |IC| 폴백
@@ -424,7 +432,7 @@ def analyze(idx):
                kmax=KMAX, kmin=KMIN)
 
     return dict(sc=sc, cur=cur, pct=pct, asof=asof, reads=reads, tbl=tbl, cbin=cbin, bet=bet,
-                proj=proj, idx=idx,
+                proj=proj, idx=idx, qedges=list(edges[1:-1]),
                 ic=ic, w={n: float(w[n]) for n in w.index}, direction=direction,
                 px=float(df[f'{idx}_종가'].dropna().iloc[-1]))
 
@@ -453,46 +461,45 @@ def dist_strip(sc, cur, color):
 
 def render_signals(reads, idx_key=''):
     zmax = max((abs(r[5]) for r in reads if r[5] is not None), default=1.5)
-    out = ''
+    out = '<div class="siglist">'
     for i, (n, desc, fmt, rv, pb, z, wt, states) in enumerate(reads, 1):
-        if 100 - pb < 1: loc = '역대 최고 수준'
-        elif pb < 1:     loc = '역대 최저 수준'
-        elif pb >= 50:   loc = f'역대 상위 {100-pb:.0f}%'
-        else:            loc = f'역대 하위 {pb:.0f}%'
-        # 체크박스: 이 신호를 종합점수에서 뺐다 넣었다 (data-속성에 기여도 저장)
+        if 100 - pb < 1: loc = '최고'
+        elif pb < 1:     loc = '최저'
+        elif pb >= 50:   loc = f'상{100-pb:.0f}%'
+        else:            loc = f'하{pb:.0f}%'
         z_attr = '' if z is None else f'{z:.4f}'
         cb = (f'<input type="checkbox" class="sigck" checked '
               f'data-idx="{idx_key}" data-w="{wt:.6f}" data-z="{z_attr}" '
               f'onchange="recalc(\'{idx_key}\')">')
-        num = f'<span class="sig-i">{i}</span>'
         if z is None:
-            out += (f'<div class="sig"><div class="sig-h"><label class="sig-ck">{cb}</label>{num}<span class="sig-n">{n}</span>'
-                    f'<span class="sig-w">가중 {wt*100:.0f}%</span></div>'
-                    f'<div class="sig-read">현재 {fmt(rv)} · {loc}</div>'
-                    f'<div class="track"><span class="mid"></span></div>'
-                    f'<div class="sig-v"><span class="na">데이터 대기</span></div></div>')
+            out += (f'<div class="sg"><label class="sg-ck">{cb}</label>'
+                    f'<span class="sg-i">{i}</span><span class="sg-n">{n}</span>'
+                    f'<span class="sg-bar"><span class="sg-mid"></span></span>'
+                    f'<span class="sg-val na">대기</span>'
+                    f'<span class="sg-w">{wt*100:.0f}%</span></div>')
             continue
         pos = z >= 0; col = '#3fb37f' if pos else '#e5484d'
-        state = states[0] if pb >= 50 else states[1]
-        mag = '강한' if abs(z) >= 1 else ('다소' if abs(z) >= 0.4 else '약한')
         width = min(abs(z)/zmax, 1)*50; side = 'left:50%' if pos else 'right:50%'
-        out += (f'<div class="sig"><div class="sig-h"><label class="sig-ck">{cb}</label>{num}<span class="sig-n">{n}</span>'
-                f'<span class="sig-w">가중 {wt*100:.0f}%</span></div>'
-                f'<div class="sig-read">현재 <b>{fmt(rv)}</b> · {loc} · {state}</div>'
-                f'<div class="track"><span class="mid"></span>'
-                f'<span class="fill" style="{side};width:{width:.1f}%;background:{col}"></span></div>'
-                f'<div class="sig-v"><span style="color:{col}">{mag} {"강세" if pos else "약세"} 기여 · {z:+.2f}\u03c3</span>'
-                f'<span class="sig-rule">{desc}</span></div></div>')
-    return out
+        arrow = '▲' if pos else '▼'
+        # 한 줄: 체크·번호·이름 | 미니바 | z값·현재값·백분위 | 가중
+        out += (f'<div class="sg" title="{fmt(rv)} · 역대 {loc} · {desc}">'
+                f'<label class="sg-ck">{cb}</label>'
+                f'<span class="sg-i">{i}</span><span class="sg-n">{n}</span>'
+                f'<span class="sg-bar"><span class="sg-mid"></span>'
+                f'<span class="sg-fill" style="{side};width:{width:.1f}%;background:{col}"></span></span>'
+                f'<span class="sg-val" style="color:{col}">{arrow}{abs(z):.1f}\u03c3</span>'
+                f'<span class="sg-rv">{fmt(rv)}</span>'
+                f'<span class="sg-w">{wt*100:.0f}%</span></div>')
+    return out + '</div>'
 
-def render_forward(tbl, cbin, sc=None):
+def render_forward(tbl, cbin, sc=None, ik=''):
     m12, w12 = tbl[12][cbin]; col = '#3fb37f' if m12 >= 0 else '#e5484d'
     mh = ''
     for h in (3, 6, 12):
         m, wn = tbl[h][cbin]; c = '#3fb37f' if m >= 0 else '#e5484d'
         mh += (f'<div class="mh"><span class="mh-h">{h}개월</span>'
-               f'<span class="mh-m" style="color:{c}">{m:+.0%}</span>'
-               f'<span class="mh-w">승률 {wn:.0%}</span></div>')
+               f'<span class="mh-m" id="mhm-{ik}-{h}" style="color:{c}">{m:+.0%}</span>'
+               f'<span class="mh-w" id="mhw-{ik}-{h}">승률 {wn:.0%}</span></div>')
     lad = ''
     for b in range(4, -1, -1):
         mean, win = tbl[12][b]; c = '#3fb37f' if mean >= 0 else '#e5484d'
@@ -505,11 +512,12 @@ def render_forward(tbl, cbin, sc=None):
             if eg:
                 ex = ('<div class="lad-ex">' + ' · '.join(
                     f'<b>{sp}</b> {lb}' if lb else f'<b>{sp}</b>' for sp, lb in eg) + '</div>')
-        lad += (f'<div class="lad{here}"><div class="lad-r"><span class="lad-b">{lab}</span>'
+        lad += (f'<div class="lad{here}" id="lad-{ik}-{b}"><div class="lad-r"><span class="lad-b">{lab}</span>'
                 f'<span class="lad-m" style="color:{c}">{mean:+.0%}</span>'
-                f'<span class="lad-w">승률 {win:.0%}</span>{tag}</div>{ex}</div>')
-    return (f'<div class="headline"><div class="big" style="color:{col}">{m12:+.0%}</div>'
-            f'<div class="cap">향후 12개월 평균 · 상승확률 {w12:.0%}</div></div>'
+                f'<span class="lad-w">승률 {win:.0%}</span>'
+                f'<span class="lad-tagwrap" id="ladtag-{ik}-{b}">{tag}</span></div>{ex}</div>')
+    return (f'<div class="headline"><div class="big" id="fbig-{ik}" style="color:{col}">{m12:+.0%}</div>'
+            f'<div class="cap">향후 12개월 평균 · <span id="fcap-{ik}">상승확률 {w12:.0%}</span></div></div>'
             f'<div class="mh-row">{mh}</div>'
             f'<h2>점수 구간별 12개월 수익 (지금 위치 강조)</h2>{lad}')
 
@@ -561,21 +569,33 @@ def section(label, a):
     ik = a['idx']
     # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
     _scdist = json.dumps([round(float(v), 4) for v in a['sc'].dropna().tolist()])
+    # 점수구간(5분위) 경계와 각 구간의 12개월 기대수익/승률을 JS에 넘겨,
+    # 체크박스로 점수가 바뀌면 어느 구간인지 다시 찾아 기대수익도 갱신한다.
+    _edges = json.dumps([round(float(x), 4) for x in a['qedges']])
+    _bins = json.dumps({str(b): [round(a['tbl'][12][b][0], 4), round(a['tbl'][12][b][1], 4)]
+                        for b in range(5)})
+    _binmh = json.dumps({str(b): {str(h): [round(a['tbl'][h][b][0], 4), round(a['tbl'][h][b][1], 4)]
+                                  for h in (3, 6, 12)} for b in range(5)})
     return (f'<div class="sec" data-idx="{ik}"><div class="sec-head">'
             f'<div class="sec-t">{label} <span class="sec-px">{a["px"]:,.1f}</span></div>'
             f'<div class="sec-score"><span class="ss" id="ss-{ik}" style="color:{rc}">{a["cur"]:+.2f}</span>'
             f'<span class="sr" id="sr-{ik}" style="color:{rc}">{rl}</span>'
             f'<span class="sp" id="sp-{ik}">백분위 {a["pct"]*100:.0f}%</span></div></div>'
             f'<script>window.SCDIST=window.SCDIST||{{}};window.SCDIST["{ik}"]={_scdist};'
-            f'window.SCBASE=window.SCBASE||{{}};window.SCBASE["{ik}"]={a["cur"]:.4f};</script>'
+            f'window.SCBASE=window.SCBASE||{{}};window.SCBASE["{ik}"]={a["cur"]:.4f};'
+            f'window.QEDGES=window.QEDGES||{{}};window.QEDGES["{ik}"]={_edges};'
+            f'window.BINRET=window.BINRET||{{}};window.BINRET["{ik}"]={_bins};'
+            f'window.BINMH=window.BINMH||{{}};window.BINMH["{ik}"]={_binmh};</script>'
             f'<div class="expbar"><span class="exp-lab">이 국면의 향후 1년 실측</span>'
-            f'<span class="exp-m" style="color:{mcol}">평균 {m12:+.0%}</span>'
-            f'<span class="exp-w">상승확률 {w12:.0%}</span>'
+            f'<span class="exp-m" id="em-{ik}" style="color:{mcol}">평균 {m12:+.0%}</span>'
+            f'<span class="exp-w" id="ew-{ik}">상승확률 {w12:.0%}</span>'
             f'<span class="exp-n">(과거 같은 점수구간 n={a["tbl"].get("n12", "")})</span></div>'
             f'{proj_html}'
             f'<div class="strip">{dist_strip(a["sc"], a["cur"], rc)}</div>'
-            f'<div class="cols"><div class="card"><h2>신호 분해</h2>{render_signals(a["reads"], a["idx"])}</div>'
-            f'<div class="card"><h2>현재 국면의 기대수익</h2>{render_forward(a["tbl"], a["cbin"], a["sc"])}</div></div></div>')
+            f'<div class="card"><h2>현재 국면의 기대수익</h2>'
+            f'{render_forward(a["tbl"], a["cbin"], a["sc"], ik)}</div>'
+            f'<div class="card"><h2>신호 분해 <span class="h2-sub">(체크 해제 시 종합점수에서 제외)</span></h2>'
+            f'{render_signals(a["reads"], a["idx"])}</div></div>')
 
 def kelly_backtest(idx='KOSPI', start='2010-12-31', H=12):
     """신호의 예측력이 가장 강한 12개월 지평에 맞춘 워크포워드 백테스트.
@@ -911,7 +931,11 @@ GLOSSARY = [
      '비율이 높아지면 돈이 정기예금 등에 묶여 안 도는 것(위험회피), 낮아지면 즉시 쓸 수 있는 '
      '자금이 늘어 활발해지는 것으로 해석한다.'),
     ('시가총액/M2', '코스피 시가총액 ÷ 광의통화(M2). <b>통화량 대비 주식시장이 얼마나 비싼가</b>. '
-     '유명한 버핏지표(시총/GDP)의 통화량 버전. 높으면 통화 대비 고평가, 낮으면 저평가.'),
+     '유명한 버핏지표(시총/GDP)의 통화량 버전. 높으면 통화 대비 고평가, 낮으면 저평가. '
+     '<b>[참고지표]</b> 단독 예측력은 IC 0.52로 최상위급이지만 PBR과 상관 0.84로 사실상 겹쳐, '
+     '가중치에 넣어도 표본외 성능 기여가 0.006에 그친다. 게다가 M2 데이터가 2003년부터라 표본이 '
+     '짧고 최근 급등해 값이 극단으로 치솟는다. 그래서 <b>종합점수에는 넣지 않고 차트로만 관찰</b>한다 '
+     '(같은 밸류 정보는 PBR·예상PER이 담당).'),
     ('경기선행지수', '통계청이 발표하는 <b>경기 국면 지표</b>(순환변동치 기준 100 안팎). '
      '100 이상이면 경기 확장, 이하면 수축. 지수가 높다는 건 이미 좋다는 뜻이라, 역발상으로는 고점 신호. '
      '<b>[한계]</b> 이 지수의 구성항목에 <b>코스피가 포함</b>돼 있어, 주가로 주가를 예측하는 '
@@ -1140,7 +1164,8 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .sec-head{{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px}}
 .sec-t{{font-size:22px;font-weight:700}}
 .sec-px{{font-family:var(--mono);font-size:15px;color:var(--mut);margin-left:8px}}
-.sec-score{{text-align:right;display:flex;align-items:baseline;gap:10px}}
+.sec-score{{text-align:right;display:flex;align-items:baseline;gap:10px;
+  background:rgba(15,22,35,.55);border-radius:10px;padding:4px 12px;backdrop-filter:blur(1px)}}
 .ss{{font-family:var(--mono);font-size:30px;font-weight:600}}
 .sr{{font-size:18px;font-weight:700}}
 .sp{{font-family:var(--mono);font-size:11.5px;color:var(--mut)}}
@@ -1157,27 +1182,29 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .exp-m{{font-family:var(--mono);font-size:19px;font-weight:600}}
 .exp-w{{font-family:var(--mono);font-size:13px;color:var(--tx)}}
 .exp-n{{font-size:10.5px;color:#5b6678;margin-left:auto}}
-.cols{{display:grid;grid-template-columns:1.12fr 1fr;gap:18px}}
-@media(max-width:760px){{.cols{{grid-template-columns:1fr}}}}
-.card{{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}}
+.card{{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:16px}}
 .card h2{{font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);margin:0 0 14px;font-weight:600}}
-.sig{{margin-bottom:10px;padding:11px 13px;background:#121a28;border:1px solid #222d42;border-radius:10px}}
-.sig-ck{{display:inline-flex;align-items:center;cursor:pointer;flex:none}}
-.sig-ck input{{width:15px;height:15px;accent-color:#4a9fd4;cursor:pointer;margin:0}}
-.sig:has(.sigck:not(:checked)){{opacity:.4}}
-.sig-h{{display:flex;align-items:baseline;gap:8px}}
-.sig-i{{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;flex:none;
-  background:#1e293c;border:1px solid #2f3d56;border-radius:5px;font-family:var(--mono);font-size:11px;color:#8b98ab}}
-.sig-n{{font-size:14px;font-weight:600}}
-.sig-w{{font-family:var(--mono);font-size:11px;color:var(--mut);margin-left:auto}}
-.sig-read{{font-size:12px;color:#b9c4d4;margin:5px 0 7px;font-family:var(--mono);padding-left:27px}}
-.sig-read b{{color:var(--tx)}}
-.track{{position:relative;height:8px;background:#0b1220;border:1px solid #1c2637;border-radius:5px;overflow:hidden;margin-left:27px}}
-.track .mid{{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#3a465a}}
-.track .fill{{position:absolute;top:0;bottom:0;border-radius:5px}}
-.sig-v{{margin-top:5px;padding-left:27px}}.sig-v>span:first-child{{font-family:var(--mono);font-size:12.5px;font-weight:600}}
-.sig-rule{{display:block;color:var(--mut);font-size:10.5px;margin-top:1px}}
+.h2-sub{{text-transform:none;letter-spacing:0;color:#5b6678;font-size:10.5px;font-weight:400;margin-left:6px}}
+/* ── 콤팩트 신호 목록: 한 줄에 하나 ── */
+.siglist{{display:flex;flex-direction:column;gap:3px}}
+.sg{{display:flex;align-items:center;gap:8px;padding:5px 9px;background:#121a28;border:1px solid #202b3e;
+  border-radius:7px;font-size:12.5px}}
+.sg:has(.sigck:not(:checked)){{opacity:.38}}
+.sg-ck{{display:inline-flex;align-items:center;cursor:pointer;flex:none}}
+.sg-ck input{{width:14px;height:14px;accent-color:#4a9fd4;cursor:pointer;margin:0}}
+.sg-i{{flex:none;width:17px;height:17px;display:inline-flex;align-items:center;justify-content:center;
+  background:#1e293c;border-radius:4px;font-family:var(--mono);font-size:10px;color:#8b98ab}}
+.sg-n{{font-weight:600;min-width:104px;flex:none}}
+.sg-bar{{position:relative;flex:1;min-width:48px;height:6px;background:#0b1220;border:1px solid #1c2637;
+  border-radius:4px;overflow:hidden}}
+.sg-bar .sg-mid{{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#3a465a}}
+.sg-bar .sg-fill{{position:absolute;top:0;bottom:0;border-radius:4px}}
+.sg-val{{font-family:var(--mono);font-size:11.5px;font-weight:600;width:46px;text-align:right;flex:none}}
+.sg-rv{{font-family:var(--mono);font-size:11px;color:#8b98ab;width:64px;text-align:right;flex:none;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.sg-w{{font-family:var(--mono);font-size:11px;color:var(--mut);width:34px;text-align:right;flex:none}}
 .na{{color:#5b6678;font-size:11px}}
+@media(max-width:760px){{.sg-rv{{display:none}}.sg-n{{min-width:82px}}}}
 .lad-r{{display:flex;align-items:center;gap:10px}}
 .lad-ex{{font-size:10.5px;color:#8b98ab;padding:3px 0 1px 62px;line-height:1.5}}
 .lad-ex b{{color:#b9c4d4;font-family:var(--mono);font-weight:600}}
@@ -1270,9 +1297,10 @@ select:hover,.btn:hover{{border-color:#3a4a63}}
 #chartWrap{{position:relative;width:100%}}
 #chart{{width:100%}}#chart svg{{width:100%;height:auto;display:block}}
 #chit{{cursor:crosshair}}
-.ctip{{display:none;position:absolute;pointer-events:none;background:#0b1220;border:1px solid #2b3648;
+.ctip{{display:none;position:absolute;pointer-events:none;background:rgba(11,18,32,.72);
+  backdrop-filter:blur(2px);border:1px solid rgba(43,54,72,.7);
   border-radius:8px;padding:8px 11px;font-size:11.5px;font-family:var(--mono);color:var(--tx);
-  box-shadow:0 4px 14px rgba(0,0,0,.45);z-index:5;white-space:nowrap}}
+  box-shadow:0 4px 14px rgba(0,0,0,.3);z-index:5;white-space:nowrap}}
 .ctip .tp-d{{color:var(--mut);font-size:10.5px;margin-bottom:5px}}
 .ctip .tp-r{{display:flex;align-items:center;gap:6px;line-height:1.75}}
 .ctip .tp-r i{{width:9px;height:3px;border-radius:2px;display:inline-block}}
@@ -1371,6 +1399,40 @@ function recalc(idx){{
     const diff=(base!=null)?(score-base):0;
     sp.textContent='백분위 '+Math.round(pct*100)+'%'+(Math.abs(diff)>0.001?'  (기본 대비 '+(diff>=0?'+':'')+diff.toFixed(2)+')':'');
   }}
+  // ── 새 점수가 어느 5분위 구간인지 찾아 '기대수익'도 갱신 ──
+  const edges=(window.QEDGES&&window.QEDGES[idx])||[];
+  let bin=0; while(bin<edges.length && score>=edges[bin]) bin++;
+  const ret=(window.BINRET&&window.BINRET[idx])||{{}};
+  const mh=(window.BINMH&&window.BINMH[idx])||{{}};
+  const pf=v=>(v>=0?'+':'')+Math.round(v*100)+'%';
+  if(ret[bin]){{
+    const [m12,w12]=ret[bin], c=m12>=0?'#3fb37f':'#e5484d';
+    const big=document.getElementById('fbig-'+idx);
+    if(big){{ big.textContent=pf(m12); big.style.color=c; }}
+    const cap=document.getElementById('fcap-'+idx);
+    if(cap) cap.textContent='상승확률 '+Math.round(w12*100)+'%';
+    const em=document.getElementById('em-'+idx);
+    if(em){{ em.textContent='평균 '+pf(m12); em.style.color=c; }}
+    const ew=document.getElementById('ew-'+idx);
+    if(ew) ew.textContent='상승확률 '+Math.round(w12*100)+'%';
+  }}
+  // 기간별(3/6/12개월) 갱신
+  if(mh[bin]){{
+    [3,6,12].forEach(h=>{{
+      const v=mh[bin][h]; if(!v) return;
+      const mm=document.getElementById('mhm-'+idx+'-'+h), mw=document.getElementById('mhw-'+idx+'-'+h);
+      if(mm){{ mm.textContent=pf(v[0]); mm.style.color=v[0]>=0?'#3fb37f':'#e5484d'; }}
+      if(mw) mw.textContent='승률 '+Math.round(v[1]*100)+'%';
+    }});
+  }}
+  // 사다리(구간표)에서 '지금 여기' 위치 이동
+  for(let b=0;b<5;b++){{
+    const row=document.getElementById('lad-'+idx+'-'+b);
+    const tw=document.getElementById('ladtag-'+idx+'-'+b);
+    if(!row) continue;
+    if(b===bin){{ row.classList.add('here'); if(tw) tw.innerHTML='<span class="lad-tag">지금 여기</span>'; }}
+    else{{ row.classList.remove('here'); if(tw) tw.innerHTML=''; }}
+  }}
 }}
 
 function niceMinMax(a){{let v=a.filter(x=>x!=null);let mn=Math.min(...v),mx=Math.max(...v);
@@ -1467,13 +1529,27 @@ async function doUpdate(){{
   const panel=document.getElementById('updPanel'), log=document.getElementById('updLog');
   panel.classList.add('on'); log.innerHTML='';
   const say=(m,c)=>{{log.innerHTML+=(c?`<span class="${{c}}">${{m}}</span>`:m)+'\\n';log.scrollTop=log.scrollHeight;}};
-  try{{ await fetch('/api/ping'); }}catch(e){{
-    say('이 버튼은 로컬 서버에서만 동작합니다.','err');
+  // 로컬 서버가 있으면(집 PC) 직접 수집, 없으면(웹) 깃허브 액션으로 안내
+  let local=false;
+  try{{ const pr=await fetch('/api/ping'); local=pr.ok; }}catch(e){{ local=false; }}
+  if(!local){{
+    // ── 웹(github.io): 파이썬을 못 돌리므로 깃허브 액션을 실행하도록 안내 ──
+    const host=location.hostname;               // maeraego.github.io
+    const owner=host.split('.')[0];             // maeraego
+    const repo=location.pathname.split('/').filter(Boolean)[0] || 'Kospi-dashboard';
+    const actionUrl='https://github.com/'+owner+'/'+repo+'/actions';
+    say('웹에서는 데이터 수집을 직접 실행할 수 없습니다.','hi');
+    say('대신 깃허브에서 「대시보드 생성」 워크플로를 실행하면');
+    say('클라우드가 최신 데이터로 다시 만들어 줍니다.');
     say('');
-    say('minyong-agent 폴더에서 아래를 실행한 뒤 열어주세요:','hi');
-    say('  C:/python312/python.exe serve_dashboard.py');
-    say('');
-    say('(또는 run_dashboard.bat 더블클릭)');
+    say('버튼을 누르면 깃허브 액션 페이지가 열립니다 →','hi');
+    say('  Run workflow 클릭 (원하면 예상순이익 입력)');
+    const niHint=[]; 
+    const n1=(document.getElementById('niY1').value||'').trim();
+    const n2=(document.getElementById('niY2').value||'').trim();
+    if(n1||n2) say('  예상순이익 '+(n1||'유지')+' / '+(n2||'유지')+' 를 칸에 입력하세요');
+    // 새 탭으로 액션 페이지 열기
+    window.open(actionUrl, '_blank');
     return;
   }}
   btn.disabled=true; txt.textContent='갱신 중…';
