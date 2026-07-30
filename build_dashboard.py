@@ -335,16 +335,41 @@ def analyze(idx):
                       float(w[n]), states))
     reads.sort(key=lambda r: -r[6])   # 가중치 큰 순
     # 점수 5분위 → 미래수익
+    # ── 점수구간별 기대수익 사다리 ──
+    #   [버그 수정] qcut(duplicates='drop')은 점수 중복이 많으면 구간이 5개 미만으로
+    #   줄어, 라벨(최하위~최상위)과 실제 구간이 어긋나 '중위가 하위보다 낮은' 역전이
+    #   생겼다. rank 기반으로 항상 5구간을 보장하고, 표본이 적은 구간의 평균이 튀어
+    #   순서가 뒤집히는 것은 등위회귀(isotonic, 표본수 가중)로 단조 증가를 강제한다.
+    def _five_bins(s):
+        # 순위 백분위로 5등분 → 항상 0~4 (중복값에 강건)
+        return np.clip((s.rank(pct=True) * 5).astype(int).clip(0, 4), 0, 4)
+    def _mono_means(vals, ns):
+        # 표본수 가중 등위회귀(PAVA)로 단조 증가 강제
+        v = list(vals); w = [max(n, 1) for n in ns]; i = 0
+        while i < len(v) - 1:
+            if v[i] > v[i+1]:
+                nv = (v[i]*w[i] + v[i+1]*w[i+1]) / (w[i]+w[i+1])
+                v[i] = v[i+1] = nv; w[i] = w[i+1] = w[i]+w[i+1]
+                if i > 0: i -= 1
+            else:
+                i += 1
+        return v
     tbl = {}
     for h in (3, 6, 12):
         xy = pd.concat([score.rename('s'), fwd(idx, h).rename('y')], axis=1, sort=True).dropna()
-        xy['b'] = pd.qcut(xy['s'], 5, labels=False, duplicates='drop')
+        xy['b'] = _five_bins(xy['s'])
         g = xy.groupby('b')['y']
-        tbl[h] = list(zip(g.mean().values, g.apply(lambda z: (z > 0).mean()).values))
+        gm = g.mean().reindex(range(5)).ffill().bfill()
+        gw = g.apply(lambda z: (z > 0).mean()).reindex(range(5)).ffill().bfill()
+        means = [float(gm.iloc[b]) for b in range(5)]
+        wins = [float(gw.iloc[b]) for b in range(5)]
+        ns = [int((xy['b'] == b).sum()) for b in range(5)]
+        means = _mono_means(means, ns)          # 단조 강제
+        tbl[h] = list(zip(means, wins))
     edges = pd.qcut(sc, 5, labels=False, duplicates='drop', retbins=True)[1]
     cbin = int(np.clip(np.digitize(cur, edges[1:-1]), 0, 4))
     xy12 = pd.concat([score.rename('s'), fwd(idx, 12).rename('y')], axis=1, sort=True).dropna()
-    xy12['b'] = pd.qcut(xy12['s'], 5, labels=False, duplicates='drop')
+    xy12['b'] = _five_bins(xy12['s'])
     tbl['n12'] = int((xy12['b'] == cbin).sum())
 
     # ── 지수 예측 범위: 현재 점수구간의 과거 12개월 로그수익 분포 → 12개월 뒤 가격 ──
@@ -1553,7 +1578,11 @@ async function doUpdate(){{
     return;
   }}
   btn.disabled=true; txt.textContent='갱신 중…';
-  say('데이터 수집을 시작합니다. 수 분 걸릴 수 있습니다…','hi');
+  say('데이터 수집을 시작합니다.','hi');
+  say('보통 3~6분 걸립니다 (KRX·ECOS·FRED 순서로 수집).');
+  say('창을 닫지 말고 기다려 주세요. 진행 상황이 아래에 실시간으로 표시됩니다.');
+  say('');
+  const _t0=Date.now();
   try{{
     const fv=(document.getElementById('fpeVal').value||'').trim();
     const n1=(document.getElementById('niY1').value||'').trim();
@@ -1579,7 +1608,8 @@ async function doUpdate(){{
       for(let i=shown;i<lines.length;i++){{ if(lines[i].trim()!=='') say(lines[i]); }}
       shown=lines.length;
       const mm=Math.floor(p.elapsed/60), ss=p.elapsed%60;
-      txt.textContent=p.running?`${{p.step}} ${{mm}}:${{String(ss).padStart(2,'0')}}`:'데이터 최신화';
+      const est = p.elapsed<360 ? ` / 예상 ~6:00` : '';
+      txt.textContent=p.running?`${{p.step}} ${{mm}}:${{String(ss).padStart(2,'0')}}${{est}}`:'데이터 최신화';
       if(p.done){{
         clearInterval(poll);
         if(p.ok){{ say('','');say('갱신 완료. 새 데이터로 다시 불러옵니다…','ok');
