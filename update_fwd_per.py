@@ -116,7 +116,23 @@ def ni_mode(fy1, fy2=None):
     if not os.path.exists(kp):
         print("[오류] krx_monthly.parquet 이 없습니다. 먼저 데이터를 수집하세요.")
         sys.exit(1)
-    mc = pd.read_parquet(kp)['KOSPI_시총'].dropna()      # 단위: 조원
+    mc = pd.read_parquet(kp)['KOSPI_시총'].dropna()      # 월말 시가총액(조원)
+    # ── 오늘 시가총액을 일별 데이터에서 가져와 최신 월에 덮어쓴다 ──
+    #   월별 parquet의 마지막 행은 '지난 월말' 값이라, 그대로 쓰면 선행PER이
+    #   한 달에 한 번만 바뀐다. 일별 parquet의 최신 거래일 시총을 이번 달에 반영해
+    #   지수가 움직일 때마다(매일) 선행PER이 갱신되게 한다.
+    dp = os.path.join(HERE, 'krx_daily.parquet')
+    if os.path.exists(dp):
+        try:
+            _mcd = pd.read_parquet(dp)['KOSPI_시총'].replace(0, float('nan')).dropna()
+            if len(_mcd):
+                _last = _mcd.index[-1]                       # 최신 거래일
+                _mkey = _last.to_period('M').to_timestamp('M')  # 그 달의 월말 타임스탬프
+                mc.loc[_mkey] = float(_mcd.iloc[-1])         # 최신 시총으로 이번 달 갱신
+                mc = mc.sort_index()
+                print(f"  (오늘 시총 반영: {_last.date()} = {float(_mcd.iloc[-1]):,.0f}조)")
+        except Exception as _e:
+            print(f"  (일별 시총 반영 실패, 월별 사용: {_e})")
 
     fy1 = float(fy1)
     fy2 = float(fy2) if fy2 is not None else None

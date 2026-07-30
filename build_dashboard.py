@@ -71,6 +71,21 @@ _d = load('krx_daily.parquet').replace([np.inf, -np.inf], np.nan)
 for _c in [c for c in _d.columns
            if any(k in c for k in ('_PER', '_PBR', '_ROE', '_종가', '_시총'))]:
     _d[_c] = _d[_c].replace(0, np.nan)
+# ── 최신 월의 시가총액·종가·PER·PBR을 '오늘(최신 거래일)' 일별값으로 덮어쓴다 ──
+#   월별 parquet의 마지막 행은 지난 월말 값이라, 그대로 쓰면 지수가 매일 움직여도
+#   시총·예상PER·시총/M2 등이 한 달에 한 번만 바뀐다. 일별 최신값을 이번 달에 반영해
+#   매 거래일 갱신되게 한다. (과거 달은 건드리지 않는다)
+for _ix in ('KOSPI', 'KOSDAQ'):
+    for _suf in ('_종가', '_시총', '_PER', '_PBR'):
+        _col = f'{_ix}{_suf}'
+        if _col in _d.columns and _col in df.columns:
+            _s = _d[_col].dropna()
+            if len(_s):
+                _last = _s.index[-1]
+                _mkey = _last.to_period('M').to_timestamp('M')
+                if _mkey in df.index or _mkey >= df.index.min():
+                    df.loc[_mkey, _col] = float(_s.iloc[-1])
+df = df.sort_index()
 for ix in ('KOSPI', 'KOSDAQ'):
     df[f'{ix}_변동성'] = (np.log(_d[f'{ix}_종가']).diff().rolling(20).std()
                         * np.sqrt(252) * 100).resample('ME').last()
@@ -337,13 +352,13 @@ def analyze(idx):
     # 점수 5분위 → 미래수익
     # ── 점수구간별 기대수익 사다리 ──
     #   [버그 수정] qcut(duplicates='drop')은 점수 중복이 많으면 구간이 5개 미만으로
-    #   줄어, 라벨(최하위~최상위)과 실제 구간이 어긋나 '중위가 하위보다 낮은' 역전이
-    #   생겼다. rank 기반으로 항상 5구간을 보장하고, 표본이 적은 구간의 평균이 튀어
-    #   순서가 뒤집히는 것은 등위회귀(isotonic, 표본수 가중)로 단조 증가를 강제한다.
-    def _five_bins(s):
-        # 순위 백분위로 5등분 → 항상 0~4 (중복값에 강건)
-        return np.clip((s.rank(pct=True) * 5).astype(int).clip(0, 4), 0, 4)
-    def _mono_means(vals, ns):
+    #   줄어, 라벨과 실제 구간이 어긋나 역전이 생겼다. rank 기반으로 항상 NB구간을
+    #   보장하고, 표본이 적은 구간의 평균·승률이 튀어 순서가 뒤집히는 것은
+    #   등위회귀(isotonic, 표본수 가중)로 '평균과 승률 모두' 단조 증가를 강제한다.
+    NB = 10                                        # 점수구간 개수 (10단계)
+    def _bins(s):
+        return np.clip((s.rank(pct=True) * NB).astype(int).clip(0, NB-1), 0, NB-1)
+    def _mono(vals, ns):
         # 표본수 가중 등위회귀(PAVA)로 단조 증가 강제
         v = list(vals); w = [max(n, 1) for n in ns]; i = 0
         while i < len(v) - 1:
@@ -357,20 +372,20 @@ def analyze(idx):
     tbl = {}
     for h in (3, 6, 12):
         xy = pd.concat([score.rename('s'), fwd(idx, h).rename('y')], axis=1, sort=True).dropna()
-        xy['b'] = _five_bins(xy['s'])
+        xy['b'] = _bins(xy['s'])
         g = xy.groupby('b')['y']
-        gm = g.mean().reindex(range(5)).ffill().bfill()
-        gw = g.apply(lambda z: (z > 0).mean()).reindex(range(5)).ffill().bfill()
-        means = [float(gm.iloc[b]) for b in range(5)]
-        wins = [float(gw.iloc[b]) for b in range(5)]
-        ns = [int((xy['b'] == b).sum()) for b in range(5)]
-        means = _mono_means(means, ns)          # 단조 강제
+        gm = g.mean().reindex(range(NB)).ffill().bfill()
+        gw = g.apply(lambda z: (z > 0).mean()).reindex(range(NB)).ffill().bfill()
+        ns = [int((xy['b'] == b).sum()) for b in range(NB)]
+        means = _mono([float(gm.iloc[b]) for b in range(NB)], ns)   # 평균 단조
+        wins = _mono([float(gw.iloc[b]) for b in range(NB)], ns)    # 승률도 단조
         tbl[h] = list(zip(means, wins))
-    edges = pd.qcut(sc, 5, labels=False, duplicates='drop', retbins=True)[1]
-    cbin = int(np.clip(np.digitize(cur, edges[1:-1]), 0, 4))
+    edges = pd.qcut(sc, NB, labels=False, duplicates='drop', retbins=True)[1]
+    cbin = int(np.clip(np.digitize(cur, edges[1:-1]), 0, NB-1))
     xy12 = pd.concat([score.rename('s'), fwd(idx, 12).rename('y')], axis=1, sort=True).dropna()
-    xy12['b'] = _five_bins(xy12['s'])
+    xy12['b'] = _bins(xy12['s'])
     tbl['n12'] = int((xy12['b'] == cbin).sum())
+    tbl['NB'] = NB
 
     # ── 지수 예측 범위: 현재 점수구간의 과거 12개월 로그수익 분포 → 12개월 뒤 가격 ──
     _px = float(df[f'{idx}_종가'].dropna().iloc[-1])
@@ -493,9 +508,16 @@ def render_signals(reads, idx_key=''):
         elif pb >= 50:   loc = f'상{100-pb:.0f}%'
         else:            loc = f'하{pb:.0f}%'
         z_attr = '' if z is None else f'{z:.4f}'
-        cb = (f'<input type="checkbox" class="sigck" checked '
-              f'data-idx="{idx_key}" data-w="{wt:.6f}" data-z="{z_attr}" '
-              f'onchange="recalc(\'{idx_key}\')">')
+        is_ref = wt <= 0 and z is not None       # 참고지표(가중 0)
+        if is_ref:
+            # 참고지표는 점수에 영향이 없으므로 체크박스를 비활성화(회색)한다
+            cb = (f'<input type="checkbox" class="sigck" checked disabled '
+                  f'data-idx="{idx_key}" data-w="0" data-z="{z_attr}" title="참고지표 · 종합점수 미반영">')
+        else:
+            cb = (f'<input type="checkbox" class="sigck" checked '
+                  f'data-idx="{idx_key}" data-w="{wt:.6f}" data-z="{z_attr}" '
+                  f'onchange="recalc(\'{idx_key}\')">')
+        w_disp = '참고' if is_ref else f'{wt*100:.0f}%'
         if z is None:
             out += (f'<div class="sg"><label class="sg-ck">{cb}</label>'
                     f'<span class="sg-i">{i}</span><span class="sg-n">{n}</span>'
@@ -514,10 +536,11 @@ def render_signals(reads, idx_key=''):
                 f'<span class="sg-fill" style="{side};width:{width:.1f}%;background:{col}"></span></span>'
                 f'<span class="sg-val" style="color:{col}">{arrow}{abs(z):.1f}\u03c3</span>'
                 f'<span class="sg-rv">{fmt(rv)}</span>'
-                f'<span class="sg-w">{wt*100:.0f}%</span></div>')
+                f'<span class="sg-w">{w_disp}</span></div>')
     return out + '</div>'
 
 def render_forward(tbl, cbin, sc=None, ik=''):
+    NB = tbl.get('NB', 10)
     m12, w12 = tbl[12][cbin]; col = '#3fb37f' if m12 >= 0 else '#e5484d'
     mh = ''
     for h in (3, 6, 12):
@@ -525,15 +548,20 @@ def render_forward(tbl, cbin, sc=None, ik=''):
         mh += (f'<div class="mh"><span class="mh-h">{h}개월</span>'
                f'<span class="mh-m" id="mhm-{ik}-{h}" style="color:{c}">{m:+.0%}</span>'
                f'<span class="mh-w" id="mhw-{ik}-{h}">승률 {wn:.0%}</span></div>')
+    # 10단계 라벨: 백분위 구간으로 표기 (상위 0~10% … 하위 0~10%)
+    def _lab(b):
+        lo = (NB - 1 - b) * 100 // NB
+        hi = (NB - b) * 100 // NB
+        return f'상위 {lo}~{hi}%'
     lad = ''
-    for b in range(4, -1, -1):
+    for b in range(NB - 1, -1, -1):
         mean, win = tbl[12][b]; c = '#3fb37f' if mean >= 0 else '#e5484d'
         here = ' here' if b == cbin else ''
-        lab = ['최하위', '하위', '중위', '상위', '최상위'][b]
+        lab = _lab(b)
         tag = '<span class="lad-tag">지금 여기</span>' if b == cbin else ''
         ex = ''
-        if sc is not None and b in (0, 4):
-            eg = examples_for(sc, b)
+        if sc is not None and b in (0, NB - 1):
+            eg = examples_for(sc, b, nq=NB)
             if eg:
                 ex = ('<div class="lad-ex">' + ' · '.join(
                     f'<b>{sp}</b> {lb}' if lb else f'<b>{sp}</b>' for sp, lb in eg) + '</div>')
@@ -544,7 +572,7 @@ def render_forward(tbl, cbin, sc=None, ik=''):
     return (f'<div class="headline"><div class="big" id="fbig-{ik}" style="color:{col}">{m12:+.0%}</div>'
             f'<div class="cap">향후 12개월 평균 · <span id="fcap-{ik}">상승확률 {w12:.0%}</span></div></div>'
             f'<div class="mh-row">{mh}</div>'
-            f'<h2>점수 구간별 12개월 수익 (지금 위치 강조)</h2>{lad}')
+            f'<h2>점수 구간별 12개월 수익 ({NB}단계 · 지금 위치 강조)</h2>{lad}')
 
 def proj_svg(a, color):
     pj = a['proj']
@@ -597,10 +625,11 @@ def section(label, a):
     # 점수구간(5분위) 경계와 각 구간의 12개월 기대수익/승률을 JS에 넘겨,
     # 체크박스로 점수가 바뀌면 어느 구간인지 다시 찾아 기대수익도 갱신한다.
     _edges = json.dumps([round(float(x), 4) for x in a['qedges']])
+    _NB = a['tbl'].get('NB', 10)
     _bins = json.dumps({str(b): [round(a['tbl'][12][b][0], 4), round(a['tbl'][12][b][1], 4)]
-                        for b in range(5)})
+                        for b in range(_NB)})
     _binmh = json.dumps({str(b): {str(h): [round(a['tbl'][h][b][0], 4), round(a['tbl'][h][b][1], 4)]
-                                  for h in (3, 6, 12)} for b in range(5)})
+                                  for h in (3, 6, 12)} for b in range(_NB)})
     return (f'<div class="sec" data-idx="{ik}"><div class="sec-head">'
             f'<div class="sec-t">{label} <span class="sec-px">{a["px"]:,.1f}</span></div>'
             f'<div class="sec-score"><span class="ss" id="ss-{ik}" style="color:{rc}">{a["cur"]:+.2f}</span>'
@@ -1408,10 +1437,12 @@ function recalc(idx){{
   boxes.forEach(b=>{{
     const w=parseFloat(b.dataset.w)||0, z=b.dataset.z===''?null:parseFloat(b.dataset.z);
     if(z===null) return;
+    if(w<=0) return;              // 참고지표(가중 0)는 점수에 영향 없음 — 정규화에서도 제외
     wtot+=w;
     if(b.checked){{ score+=z*w; wsum+=w; }}
   }});
   if(wsum>0) score = score * (wtot/wsum);
+  else score = (window.SCBASE&&window.SCBASE[idx]) || 0;   // 전부 꺼지면 기본값 유지
   const dist=(window.SCDIST&&window.SCDIST[idx])||[];
   let pct=0.5;
   if(dist.length){{ pct=dist.filter(v=>v<score).length/dist.length; }}
@@ -1451,7 +1482,8 @@ function recalc(idx){{
     }});
   }}
   // 사다리(구간표)에서 '지금 여기' 위치 이동
-  for(let b=0;b<5;b++){{
+  const NB=(window.BINRET&&window.BINRET[idx])?Object.keys(window.BINRET[idx]).length:10;
+  for(let b=0;b<NB;b++){{
     const row=document.getElementById('lad-'+idx+'-'+b);
     const tw=document.getElementById('ladtag-'+idx+'-'+b);
     if(!row) continue;
