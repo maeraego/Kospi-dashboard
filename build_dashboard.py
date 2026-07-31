@@ -183,6 +183,21 @@ def signals_for(idx):
         #   단독 IC 0.136 → 0.259 로 개선 확인.
         _fpe_dev = np.log(df['예상PER']) - np.log(df['예상PER']).rolling(60, min_periods=36).mean()
         sig.insert(2, ('예상PER 괴리', _fpe_dev, -1, FMT_DEV, ('추세대비 비쌈', '추세대비 쌈')))
+        # ── Forward PBR (선행 PBR) ──
+        #   현재 PBR은 '과거에 쌓인 순자산' 기준이라, 앞으로 벌 이익이 자본으로 쌓이는 걸
+        #   반영 못 한다. 예상순이익이 크면 미래 순자산이 늘어 실질 밸류는 더 싸다.
+        #     순자산(자본) = 시가총액 / 현재 PBR
+        #     예상순이익 = 시가총액 / 예상PER   (예상PER = 시총/예상순이익 이므로)
+        #     미래 순자산 = 순자산 + 예상순이익 × (1 − 배당성향)   (배당성향 0.35 가정)
+        #     Forward PBR = 시가총액 / 미래 순자산
+        _pbr = df[f'{idx}_PBR'].where(df[f'{idx}_PBR'] > 0)
+        _fpe = df['예상PER'].where(df['예상PER'] > 0)
+        _equity = 1.0 / _pbr                       # 시총=1로 정규화 → 자본 = 1/PBR
+        _ni = 1.0 / _fpe                            # 예상순이익 = 1/예상PER
+        _payout = 0.35                              # 배당성향(사내유보 65%가 자본에 쌓임)
+        _fwd_equity = _equity + _ni * (1 - _payout)
+        _fwd_pbr = 1.0 / _fwd_equity               # 시총(=1) / 미래자본
+        sig.insert(3, ('선행 PBR', _fwd_pbr, -1, FMT_X, ('고평가', '저평가')))
     return sig
 
 def regime(p):
@@ -302,6 +317,24 @@ def analyze(idx):
         direction[n] = (eff, eff != base)        # (강세방향, 역발상여부)
         meta[n] = (s, fmt, states)
         _nobs[n] = n_obs
+    # ── 경기선행지수 순환참조 보정 ──
+    #   경기선행종합지수에는 코스피가 구성항목으로 들어가, 실측상 코스피가 +1개월 앞선다
+    #   (동행/후행). 원본 IC(0.565) 중 코스피 성분을 회귀로 뺀 순수 경기정보 IC는 0.421로,
+    #   약 26%가 순환참조로 부풀려진 것. 신호 값 자체는 원본을 쓰되(과거 직교화가 극단에서
+    #   붕괴했기 때문), 가중치 산정에 쓰는 IC만 순수분으로 낮춰 다른 신호가 제 몫을 받게 한다.
+    if idx == 'KOSPI' and '경기선행지수' in ic and '선행지수' in df:
+        try:
+            _liy = ez(df['선행지수']) * direction['경기선행지수'][0]
+            _km = df['KOSPI_종가'].pct_change(12, fill_method=None)
+            _c = pd.concat([_liy.rename('li'), _km.rename('k')], axis=1, sort=True).dropna()
+            if len(_c) > 60:
+                _rli, _rk = _c['li'].rank(pct=True), _c['k'].rank(pct=True)
+                _resid = _rli - np.polyfit(_rk, _rli, 1)[0] * _rk
+                _xy = pd.concat([_resid.rename('x'), y12.rename('y')], axis=1, sort=True).dropna()
+                _pure = abs(float(_xy['x'].corr(_xy['y'])))
+                ic['경기선행지수'] = min(ic['경기선행지수'], _pure)   # 순환참조분 제거
+        except Exception:
+            pass
     bull = pd.DataFrame(bull_cols).ffill(limit=3)
 
     # 예측력 없는 신호(억제변수) 제외: 단변량 |IC| < 0.10 이면 가중치 0.
@@ -413,6 +446,17 @@ def analyze(idx):
                     samples=[float(_px * np.exp(v)) for v in _g.values])
     else:
         proj = None
+    # 각 구간(bin)의 예측 범위 — 체크박스로 국면이 바뀌면 예측 박스도 갱신하기 위해
+    projbins = {}
+    for _b in range(tbl.get('NB', 10)):
+        _gb = xy12[xy12['b'] == _b]['y']
+        if len(_gb) >= 5:
+            projbins[_b] = dict(lo=float(_px * np.exp(_gb.quantile(.15))),
+                                hi=float(_px * np.exp(_gb.quantile(.85))),
+                                med=float(_px * np.exp(_gb.median())),
+                                up=float((_gb > 0).mean()))
+    tbl['projbins'] = projbins
+    tbl['px_now'] = _px
 
     # ── 베팅비율: 전통적 켈리 공식  f* = p − q/b ──────────────────
     #   p = 이길 확률(향후 12개월 수익 > 0),  q = 1−p
@@ -625,24 +669,25 @@ def section(label, a):
     proj_html = ''
     if pj:
         proj_html = (f'<div class="projbox"><div class="proj-h">'
-                     f'<span>12개월 뒤 지수 예측 <b style="color:{rc}">'
+                     f'<span>12개월 뒤 지수 예측 <b id="pjrange-{a["idx"]}" style="color:{rc}">'
                      f'{pj["lo"]:,.0f} ~ {pj["hi"]:,.0f}</b> <span class="proj-p">(70% 구간)</span></span>'
-                     f'<span class="proj-med">중앙 {pj["med"]:,.0f} · 상승확률 {pj["up"]:.0%}</span></div>'
+                     f'<span class="proj-med" id="pjmed-{a["idx"]}">중앙 {pj["med"]:,.0f} · 상승확률 {pj["up"]:.0%}</span></div>'
                      f'{proj_svg(a, rc)}'
-                     f'<div class="proj-cap">현재 종합점수 {a["cur"]:+.2f}({rl})가 놓인 국면에서, '
+                     f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면에서, '
                      f'과거 12개월 실제 수익 분포를 현재가 {pj["px"]:,.0f}에 적용한 범위입니다. '
                      f'예측이 아니라 과거 통계 분포이며, 꼬리 위험이 있습니다.</div></div>')
     ik = a['idx']
     # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
     _scdist = json.dumps([round(float(v), 4) for v in a['sc'].dropna().tolist()])
-    # 점수구간(5분위) 경계와 각 구간의 12개월 기대수익/승률을 JS에 넘겨,
-    # 체크박스로 점수가 바뀌면 어느 구간인지 다시 찾아 기대수익도 갱신한다.
     _edges = json.dumps([round(float(x), 4) for x in a['qedges']])
     _NB = a['tbl'].get('NB', 10)
     _bins = json.dumps({str(b): [round(a['tbl'][12][b][0], 4), round(a['tbl'][12][b][1], 4)]
                         for b in range(_NB)})
     _binmh = json.dumps({str(b): {str(h): [round(a['tbl'][h][b][0], 4), round(a['tbl'][h][b][1], 4)]
                                   for h in (3, 6, 12)} for b in range(_NB)})
+    # 각 구간의 예측 범위(체크박스로 국면 바뀌면 예측박스 갱신)
+    _pjb = json.dumps({str(b): [round(v['lo']), round(v['hi']), round(v['med']), round(v['up'], 3)]
+                       for b, v in a['tbl'].get('projbins', {}).items()})
     return (f'<div class="sec" data-idx="{ik}"><div class="sec-head">'
             f'<div class="sec-t">{label} <span class="sec-px">{a["px"]:,.1f}</span></div>'
             f'<div class="sec-score"><span class="ss" id="ss-{ik}" style="color:{rc}">{a["cur"]:+.2f}</span>'
@@ -653,7 +698,8 @@ def section(label, a):
             f'window.CBIN=window.CBIN||{{}};window.CBIN["{ik}"]={a["cbin"]};'
             f'window.QEDGES=window.QEDGES||{{}};window.QEDGES["{ik}"]={_edges};'
             f'window.BINRET=window.BINRET||{{}};window.BINRET["{ik}"]={_bins};'
-            f'window.BINMH=window.BINMH||{{}};window.BINMH["{ik}"]={_binmh};</script>'
+            f'window.BINMH=window.BINMH||{{}};window.BINMH["{ik}"]={_binmh};'
+            f'window.PJBIN=window.PJBIN||{{}};window.PJBIN["{ik}"]={_pjb};</script>'
             f'<div class="expbar"><span class="exp-lab">이 국면의 향후 1년 실측</span>'
             f'<span class="exp-m" id="em-{ik}" style="color:{mcol}">평균 {m12:+.0%}</span>'
             f'<span class="exp-w" id="ew-{ik}">상승확률 {w12:.0%}</span>'
@@ -1009,7 +1055,10 @@ GLOSSARY = [
      '순환참조가 일부 존재합니다(실측: 선행지수 YoY와 코스피 YoY의 최대 상관 시점이 +1개월 — 코스피가 앞섬). '
      '따라서 이 신호의 예측력 일부는 "경기"가 아니라 <b>코스피 자체의 평균회귀</b>에서 나옵니다. '
      '회귀로 주가 성분을 제거해 보았으나, 코스피가 극단적으로 움직이는 구간에서 보정이 과도해져 '
-     '과열 신호가 침체로 뒤집히는 문제가 있어 원본을 그대로 씁니다. 해석할 때 이 점을 감안하세요.'),
+     '과열 신호가 침체로 뒤집히는 문제가 있어 <b>신호 값 자체는 원본을 씁니다</b>. '
+     '대신 <b>가중치 산정에 쓰는 IC만 순환참조분을 뺀 순수 경기정보로 낮춥니다</b>'
+     '(원본 IC 0.565 → 코스피 성분 제거 후 0.421, 약 26%가 순환참조). '
+     '이렇게 하면 극단 붕괴 없이 가중 과다만 교정됩니다.'),
     ('신용스프레드', '회사채(AA−, 3년) 금리 − 국고채(3년) 금리. <b>기업이 돈 빌릴 때 더 내는 웃돈</b>. '
      '벌어지면 신용 경색·불안, 좁으면 안정. 크게 벌어진 뒤엔 위험자산이 반등하는 경향.'),
     ('일드커브 (장단기 금리차)', '국고채 10년 − 3년 금리. <b>미래 경기에 대한 채권시장의 전망</b>. '
@@ -1520,6 +1569,18 @@ function recalc(idx){{
     if(b===bin){{ row.classList.add('here'); if(tw) tw.innerHTML='<span class="lad-tag">지금 여기</span>'; }}
     else{{ row.classList.remove('here'); if(tw) tw.innerHTML=''; }}
   }}
+  // ── 12개월 뒤 지수 예측 박스도 갱신 ──
+  const pjb=(window.PJBIN&&window.PJBIN[idx])||{{}};
+  const fmt=n=>Math.round(n).toLocaleString();
+  if(pjb[bin]){{
+    const [lo,hi,med,up]=pjb[bin];
+    const rng=document.getElementById('pjrange-'+idx);
+    if(rng) rng.textContent=fmt(lo)+' ~ '+fmt(hi);
+    const md=document.getElementById('pjmed-'+idx);
+    if(md) md.textContent='중앙 '+fmt(med)+' · 상승확률 '+Math.round(up*100)+'%';
+    const sc2=document.getElementById('pjscore-'+idx);
+    if(sc2) sc2.textContent=(score>=0?'+':'')+score.toFixed(2)+'('+lab+')';
+  }}
 }}
 
 function niceMinMax(a){{let v=a.filter(x=>x!=null);let mn=Math.min(...v),mx=Math.max(...v);
@@ -1561,6 +1622,26 @@ function draw(){{
           `<line x1="${{mL}}" y1="${{zeroY.toFixed(1)}}" x2="${{W-mR}}" y2="${{zeroY.toFixed(1)}}" stroke="#5f7291" stroke-dasharray="4 3"/>`+
           `<text x="${{W-mR-4}}" y="${{(zeroY-4).toFixed(1)}}" fill="#3fb37f" font-size="9.5" text-anchor="end" font-family="ui-monospace">유리</text>`+
           `<text x="${{W-mR-4}}" y="${{(zeroY+12).toFixed(1)}}" fill="#e5484d" font-size="9.5" text-anchor="end" font-family="ui-monospace">불리</text>`;
+  }} else {{
+    // 개별 지표: 과거 중앙값을 '유리/불리 경계선'으로 긋는다.
+    //   방향(dir)에 따라 위/아래 중 어느 쪽이 유리인지 색을 맞춘다.
+    const iv=ind.filter(v=>v!=null).sort((a,b)=>a-b);
+    if(iv.length>10){{
+      const medV=iv[Math.floor(iv.length/2)];
+      const medY=Yi(medV);
+      const meta=DATA.ic[indK];
+      // dir 문자열에 '낮을수록 강세'면 낮은 쪽(아래)이 유리
+      const lowGood=meta&&meta.dir&&meta.dir.indexOf('낮을')>=0;
+      const upFill=lowGood?'#e5484d':'#3fb37f';   // 위쪽 색
+      const dnFill=lowGood?'#3fb37f':'#e5484d';   // 아래쪽 색
+      const upLab=lowGood?'불리':'유리', dnLab=lowGood?'유리':'불리';
+      shade=`<rect x="${{mL}}" y="${{mT}}" width="${{W-mL-mR}}" height="${{medY-mT}}" fill="${{upFill}}" opacity="0.05"/>`+
+            `<rect x="${{mL}}" y="${{medY}}" width="${{W-mL-mR}}" height="${{H-mB-medY}}" fill="${{dnFill}}" opacity="0.05"/>`+
+            `<line x1="${{mL}}" y1="${{medY.toFixed(1)}}" x2="${{W-mR}}" y2="${{medY.toFixed(1)}}" stroke="#5f7291" stroke-dasharray="4 3"/>`+
+            `<text x="${{W-mR-4}}" y="${{(medY-4).toFixed(1)}}" fill="${{upFill}}" font-size="9.5" text-anchor="end" font-family="ui-monospace">${{upLab}}</text>`+
+            `<text x="${{W-mR-4}}" y="${{(medY+12).toFixed(1)}}" fill="${{dnFill}}" font-size="9.5" text-anchor="end" font-family="ui-monospace">${{dnLab}}</text>`+
+            `<text x="${{mL+4}}" y="${{(medY-4).toFixed(1)}}" fill="#8b98ab" font-size="9" font-family="ui-monospace">중앙값 ${{medV>=1000?Math.round(medV).toLocaleString():medV.toFixed(medV>=100?0:2)}}</text>`;
+    }}
   }}
   // 지표 정보(IC·가중치·방향 또는 점수 산출식)
   const info=document.getElementById('indInfo');
