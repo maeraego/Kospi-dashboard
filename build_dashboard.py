@@ -145,7 +145,11 @@ def signals_for(idx):
     #   · 시가총액/M2: 시장이 통화량 대비 얼마나 비싼가(버핏지표의 통화량 버전).
     _m2y = df['M2'].pct_change(12, fill_method=None) * 100 if 'M2' in df else None
     _m21 = (df['M2'] / df['M1']) if ('M2' in df and 'M1' in df) else None
-    _mc_m2 = (df[f'{idx}_시총'] / df['M2']) if ('M2' in df and f'{idx}_시총' in df) else None
+    # 시총/M2: M2는 ECOS 특성상 2개월가량 지연 발표된다. 시가총액은 오늘 값인데
+    #   최신 달 M2가 아직 없으면 비율이 NaN이 되어 차트 최신점이 끊긴다.
+    #   가장 최근 발표된 M2를 앞으로 채워(ffill) 최신 시총과 나눈다.
+    _mc_m2 = ((df[f'{idx}_시총'] / df['M2'].ffill())
+              if ('M2' in df and f'{idx}_시총' in df) else None)
     # [주의] 경기선행종합지수에는 코스피가 구성항목으로 들어간다.
     #   실측: 선행지수 YoY와 코스피 YoY의 최대 상관이 +1개월(코스피가 앞섬) → 순환참조.
     #   한때 코스피 성분을 회귀로 제거한 잔차를 썼으나, 코스피가 역대급으로 움직이는
@@ -320,6 +324,15 @@ def analyze(idx):
     w = _ridge_weights(bull, y12, cols)               # 다변량(중복 제거)
     if w is None:                                      # 실패 시 단변량 |IC| 폴백
         w = pd.Series({c: ic[c] for c in cols}); w = w / w.sum() if w.sum() else w
+    else:
+        # ── IC×Ridge 혼합 가중 ──
+        #   순수 Ridge 계수만 쓰면 예측력 낮은 억제변수(일드커브 IC 0.10, 기준금리 등)가
+        #   "다른 변수를 돕는 척" 가중을 부풀리는 문제가 있었다(실측: 일드커브 IC 14위인데
+        #   가중 7위). 각 신호의 단독 예측력(IC)을 Ridge 계수에 곱해, 예측력 없는 신호는
+        #   자동으로 눌리고 가치지표(PBR·예상PER)처럼 예측력 있는 신호는 제 몫을 받게 한다.
+        #   실측 표본외 IC: 순수 Ridge 0.609 → IC×Ridge 혼합 0.710 (개선 확인).
+        w = pd.Series({c: ic[c] * float(w[c]) for c in cols})
+        if w.sum(): w = w / w.sum()
     w = w.reindex(bull.columns).fillna(0.0)           # 제외된 신호는 0
     if w.sum(): w = w / w.sum()
 
@@ -637,6 +650,7 @@ def section(label, a):
             f'<span class="sp" id="sp-{ik}">백분위 {a["pct"]*100:.0f}%</span></div></div>'
             f'<script>window.SCDIST=window.SCDIST||{{}};window.SCDIST["{ik}"]={_scdist};'
             f'window.SCBASE=window.SCBASE||{{}};window.SCBASE["{ik}"]={a["cur"]:.4f};'
+            f'window.CBIN=window.CBIN||{{}};window.CBIN["{ik}"]={a["cbin"]};'
             f'window.QEDGES=window.QEDGES||{{}};window.QEDGES["{ik}"]={_edges};'
             f'window.BINRET=window.BINRET||{{}};window.BINRET["{ik}"]={_bins};'
             f'window.BINMH=window.BINMH||{{}};window.BINMH["{ik}"]={_binmh};</script>'
@@ -941,27 +955,26 @@ def weights_section(AK, AQ):
             f'<div class="ctrls"><button class="btn" onclick="toggleW()">근거 보기/숨기기</button></div></div>'
             f'<div class="card" id="wWrap" style="display:none">'
             f'<p class="note">후보 지표를 <b>전부</b> 넣고, <b>다변량 Ridge 회귀</b>(λ=10·30·100 앙상블)로 '
-            f'12개월 뒤 수익률을 함께 설명하게 한 뒤 계수 크기로 가중합합니다. 단변량 |IC|(표의 둘째 열)는 그 지표 <i>혼자</i>의 '
-            f'예측력이고, <b>최종가중</b>은 다른 지표와 <b>겹치는 부분을 제거한 뒤 남는 고유 기여</b>입니다. '
-            f'<b>가중치는 IC 순서가 아닙니다.</b> 단변량 IC는 "그 신호 혼자서 얼마나 맞히나"이고, '
-            f'가중치는 "다른 신호들과 함께 있을 때 얼마나 새로운 정보를 더하나"입니다. '
-            f'그래서 서로 비슷한 말을 하는 신호들(PBR·수출·경기선행지수는 모두 "경기 과열"을 가리켜 서로 상관됨)은 '
-            f'비중이 나뉘고, 혼자만 다른 얘기를 하는 신호(환율)는 IC가 같아도 더 큰 비중을 받습니다. '
-            f'실제로 이 대시보드에서 IC 1위는 PBR(0.52)이지만 가중치 1위는 환율(0.51)입니다 — '
-            f'환율은 다른 신호와의 평균상관이 0.15로 가장 독립적이기 때문입니다. '
-            f'수치로 보면 가중치는 IC와 +0.57, 다른 신호와의 평균상관과 −0.33의 관계를 가집니다.<br>'
+            f'12개월 뒤 수익률을 함께 설명하게 한 뒤, <b>각 신호의 단독 예측력(IC)을 Ridge 계수에 곱한 '
+            f'혼합 가중</b>을 씁니다. 단변량 |IC|(표의 둘째 열)는 그 지표 <i>혼자</i>의 예측력이고, '
+            f'Ridge 계수는 다른 지표와 <b>겹치는 부분을 제거한 뒤 남는 고유 기여</b>입니다. '
+            f'이 둘을 곱하면 <b>"예측력도 있고 남들과 겹치지도 않는"</b> 신호가 높은 가중을 받습니다.<br>'
+            f'<b>왜 IC×Ridge 혼합인가.</b> 순수 Ridge 계수만 쓰면 예측력이 거의 없는 신호'
+            f'(예: 일드커브 IC 0.10, 기준금리 IC 0.14)가 회귀에서 <b>억제변수</b>로 작동해 '
+            f'"다른 변수를 돕는 척" 가중을 부풀리는 문제가 있었습니다. 실제로 일드커브는 IC 순위 14위인데 '
+            f'가중 7위였습니다. 여기에 IC를 곱하면 예측력 없는 신호는 자동으로 눌리고, 가치지표(PBR·예상PER)처럼 '
+            f'실제 예측력 있는 신호가 제 몫을 받습니다. '
+            f'<b>표본외 검증(2005–15 학습 → 2016–26 검증) 결과 표본외 IC가 순수 Ridge 0.61 → 혼합 0.71로 개선</b>됐습니다.<br>'
+            f'<b>가중치는 여전히 IC 순서와 다를 수 있습니다.</b> 서로 비슷한 말을 하는 신호들(PBR·수출·경기선행지수는 '
+            f'모두 "경기 과열"을 가리켜 상관됨)은 Ridge 단계에서 비중이 나뉘기 때문입니다. '
+            f'즉 최종가중 = (혼자서 얼마나 맞히나) × (남들과 얼마나 겹치지 않나).<br>'
             f'<b>산출 절차.</b> ① 각 신호를 과거 데이터만으로 표준화(z-score) → ② 경제적 방향을 붙이되 '
             f'실제 데이터가 반대면 뒤집음(역발상 표시) → ③ 단변량 |IC| 0.10 미만은 예측력 없음으로 보고 제외 → '
             f'④ 남은 신호를 능형회귀(Ridge, λ=10·30·100 앙상블)에 넣어 회귀계수를 구하고 → '
-            f'⑤ 계수의 절대값을 합이 100%가 되도록 정규화한 것이 가중치입니다. '
-            f'λ를 여러 개 평균내는 이유는 특정 λ에 결과가 휘둘리지 않게 하기 위함입니다. '
-            f'|IC| 0.10 미만을 빼는 이유는 이들을 넣으면 회귀가 노이즈를 상쇄하는 '
-            f'억제변수로 끌어들여 표본외 성능이 오히려 떨어지기 때문입니다(코스피 표본외 IC 0.68→0.73 개선 확인).<br>'
+            f'⑤ <b>|IC| × |Ridge계수|</b>를 합이 100%가 되도록 정규화한 것이 가중치입니다.<br>'
             f'<b>방향</b>은 과거 IC 부호로 확정하며, 통념과 반대면 '
             f'<span class="con">역발상</span>으로 표시합니다(예: ROE·수출 급증 = 경기 정점 → 이후 약세). '
-            f'코스피·코스닥 각자 자기 데이터로 산출. '
-            f'※ 표본외 검증(2005–15 학습 → 2016–26 검증) 결과 이 방식이 단변량 대비 코스피 IC +0.56→+0.64로 개선, '
-            f'코스닥은 동등했습니다. 중첩표본이라 신뢰구간은 여전히 넓습니다.</p>'
+            f'코스피·코스닥 각자 자기 데이터로 산출. 중첩표본이라 신뢰구간은 넓습니다.</p>'
             f'<div class="wcols"><div><h3>코스피</h3>{wtable(AK)}</div>'
             f'<div><h3>코스닥</h3>{wtable(AQ)}</div></div></div></div>')
 
@@ -1136,7 +1149,7 @@ comp = {
     'M1': df.get('M1'), 'M2': df.get('M2'),
     'M2/M1 비율': (df['M2'] / df['M1']) if ('M2' in df and 'M1' in df) else None,
     'M2 증가율': df['M2'].pct_change(12, fill_method=None) * 100 if 'M2' in df else None,
-    '시가총액/M2': (df['KOSPI_시총'] / df['M2']) if ('M2' in df and 'KOSPI_시총' in df) else None,
+    '시가총액/M2': (df['KOSPI_시총'] / df['M2'].ffill()) if ('M2' in df and 'KOSPI_시총' in df) else None,
     '코스피 종합점수': AK['sc'], '코스닥 종합점수': AQ['sc'],
 }
 comp = pd.DataFrame({k: v for k, v in comp.items() if v is not None}).loc['1995-01-31':]
@@ -1433,16 +1446,26 @@ function _regimeLabel(pct){{
 }}
 function recalc(idx){{
   const boxes=[...document.querySelectorAll('.sigck[data-idx="'+idx+'"]')];
-  let score=0, wsum=0, wtot=0;
+  let score=0, wsum=0, wtot=0, allOn=true;
   boxes.forEach(b=>{{
     const w=parseFloat(b.dataset.w)||0, z=b.dataset.z===''?null:parseFloat(b.dataset.z);
     if(z===null) return;
     if(w<=0) return;              // 참고지표(가중 0)는 점수에 영향 없음 — 정규화에서도 제외
     wtot+=w;
     if(b.checked){{ score+=z*w; wsum+=w; }}
+    else allOn=false;            // 하나라도 꺼져 있으면 재계산
   }});
-  if(wsum>0) score = score * (wtot/wsum);
-  else score = (window.SCBASE&&window.SCBASE[idx]) || 0;   // 전부 꺼지면 기본값 유지
+  // [중요] 전부 켜져 있으면 재계산의 부동소수점 오차로 원래 점수가 살짝 달라져
+  //   구간(bin)이 튀는 문제가 있다. 이 경우엔 원본 기준값(SCBASE)을 그대로 써서
+  //   '해제 → 재체크' 시 완벽히 복구되게 한다.
+  const base=(window.SCBASE&&window.SCBASE[idx]);
+  if(allOn && base!=null){{
+    score=base;
+  }} else if(wsum>0){{
+    score=score*(wtot/wsum);
+  }} else {{
+    score=(base!=null)?base:0;   // 전부 꺼지면 기준값
+  }}
   const dist=(window.SCDIST&&window.SCDIST[idx])||[];
   let pct=0.5;
   if(dist.length){{ pct=dist.filter(v=>v<score).length/dist.length; }}
@@ -1455,9 +1478,16 @@ function recalc(idx){{
     const diff=(base!=null)?(score-base):0;
     sp.textContent='백분위 '+Math.round(pct*100)+'%'+(Math.abs(diff)>0.001?'  (기본 대비 '+(diff>=0?'+':'')+diff.toFixed(2)+')':'');
   }}
-  // ── 새 점수가 어느 5분위 구간인지 찾아 '기대수익'도 갱신 ──
+  // ── 새 점수가 어느 구간인지 찾아 '기대수익'도 갱신 ──
+  //   전부 켜져 있으면 원본 구간(CBIN)을 그대로 써서 완벽히 복구한다
+  //   (경계값 부동소수점 비교로 bin이 튀는 것을 원천 차단).
   const edges=(window.QEDGES&&window.QEDGES[idx])||[];
-  let bin=0; while(bin<edges.length && score>=edges[bin]) bin++;
+  let bin;
+  if(allOn && window.CBIN && window.CBIN[idx]!=null){{
+    bin=window.CBIN[idx];
+  }} else {{
+    bin=0; while(bin<edges.length && score>=edges[bin]) bin++;
+  }}
   const ret=(window.BINRET&&window.BINRET[idx])||{{}};
   const mh=(window.BINMH&&window.BINMH[idx])||{{}};
   const pf=v=>(v>=0?'+':'')+Math.round(v*100)+'%';
