@@ -380,6 +380,21 @@ def analyze(idx):
     w = w.reindex(bull.columns).fillna(0.0)           # 제외된 신호는 0
     if w.sum(): w = w / w.sum()
 
+    # ── 변동성 지표 최소가중 (역발상 강세신호) ──
+    #   실측: 변동성(한국VIX)이 높을수록 이후 12개월 수익이 좋다(상관 +0.19, 고변동 국면
+    #   승률 73%). "공포에 사라" — VIX 급등은 바닥 신호다. 그런데 평상시 IC×Ridge로는
+    #   한국VIX 가중이 1.5%로 눌려, 변동성이 z=+5로 폭발해도 종합점수에 거의 반영이 안 돼
+    #   급락·고변동 국면을 '중립'으로 오판했다(2026 급락장에서 확인).
+    #   → 변동성 지표에 하한 5%를 부여해, 폭발 시 확실히 '유리'로 잡히게 한다.
+    #   실측 표본외 IC 영향: 0.789 → 0.787 (거의 없음). 변동성이 유효 신호라 손실 미미.
+    _VOL_FLOOR = {'한국VIX': 0.05, 'VIX 급등(YoY)': 0.03}
+    _changed = False
+    for _vn, _fl in _VOL_FLOOR.items():
+        if _vn in w.index and ic.get(_vn, 0) >= 0.10 and w[_vn] < _fl:
+            w[_vn] = _fl; _changed = True
+    if _changed and w.sum():
+        w = w / w.sum()
+
     def wsum(row):
         v = row.dropna().index
         return (row[v] * (w[v] / w[v].sum())).sum() if len(v) and w[v].sum() else np.nan
