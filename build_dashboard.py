@@ -427,32 +427,42 @@ def analyze(idx):
                 i += 1
         return v
     tbl = {}
-    # ── 장기 드리프트(CAGR) 보정 ── [재설계 v3]
+    # ── 장기 드리프트(CAGR) 보정 + 부드러운 십분위 ── [재설계 v4]
     #   국면별 기대수익을 실현치로만 계산하면 표본기간 편향으로 '중립'이 비관적으로 나온다.
-    #   [v1 실패] 표본평균 빼고 CAGR 더함 → 표본평균>CAGR이면 보정 음수(민용 데이터 버그).
-    #   [v2 실패] 중립 구간을 CAGR에 앵커 → 전 구간 동일 이동이라 불리 국면(-19%)이
-    #             +7%p 올라 -0%가 되어버림. 과열/침체 신호가 뭉개짐(민용 지적).
-    #   [v3] 각 구간 = CAGR + (그 구간 raw − 구간평균들의 평균).
-    #        전체 평균을 장기 CAGR에 맞추되, 각 국면의 상대편차는 100% 보존한다.
-    #        → 중립은 CAGR 근처, 불리 국면은 여전히 크게 마이너스, 유리는 크게 플러스.
+    #   [v1~v3 히스토리] 표본평균빼기(음수보정)·중립앵커(극단뭉갬)를 거쳐, v3는
+    #   'CAGR + (구간raw − 구간평균)'으로 전체평균을 CAGR에 맞추고 상대편차를 보존한다.
+    #   [v4 추가] 표본이 220여개뿐이라 딱딱하게 10등분하면 구간당 22개로 노이즈가 커서
+    #   raw가 뒤죽박죽(비단조)이 되고, 그걸 PAVA로 뭉개면 중립이 -0%로 눌린다(민용 지적).
+    #   → 각 십분위를 '중심 ±20% 표본이 겹치는 이동창(rolling)'으로 계산해 부드럽게 만든다.
+    #   IC는 0.5로 강하니, 겹침 평균만으로도 자연스러운 단조가 나와 PAVA 왜곡이 사라진다.
     #   주의: "미래에도 과거만큼 오른다"는 가정. 저성장 진입 시 과대추정 위험.
     _Plong = df[f'{idx}_종가'].dropna()
     _Plong = _Plong[_Plong.index.year >= 1995]
     _yrs = max((_Plong.index[-1] - _Plong.index[0]).days / 365.25, 1)
     _cagr_log = float(np.log(_Plong.iloc[-1] / _Plong.iloc[0]) / _yrs)   # 연 로그수익
+
+    def _smooth_bins(xs, ys, nb):
+        # 점수 오름차순 정렬 후, 각 십분위 중심 ±20% 표본이 겹치는 이동창 평균/승률
+        o = np.argsort(xs); ys2 = np.asarray(ys)[o]
+        n = len(ys2); win = max(int(n * 0.20), 8)
+        mval, wval, nval = [], [], []
+        for b in range(nb):
+            c = int((b + 0.5) / nb * n)
+            lo = max(0, c - win // 2); hi = min(n, c + win // 2)
+            seg = ys2[lo:hi]
+            mval.append(float(np.mean(seg)))
+            wval.append(float((seg > 0).mean()))
+            nval.append(len(seg))
+        return mval, wval, nval
+
     for h in (3, 6, 12):
         xy = pd.concat([score.rename('s'), fwd(idx, h).rename('y')], axis=1, sort=True).dropna()
-        xy['b'] = _bins(xy['s'])
-        g = xy.groupby('b')['y']
-        gm = g.mean().reindex(range(NB)).ffill().bfill()
-        gw = g.apply(lambda z: (z > 0).mean()).reindex(range(NB)).ffill().bfill()
-        ns = [int((xy['b'] == b).sum()) for b in range(NB)]
-        raw_means = [float(gm.iloc[b]) for b in range(NB)]
+        raw_means, wins_raw, ns = _smooth_bins(xy['s'].values, xy['y'].values, NB)
         _bar = sum(raw_means) / NB                     # 구간평균들의 평균
         _target = _cagr_log * (h / 12.0)               # 기간환산 장기 CAGR
-        # 각 구간: 전체평균을 CAGR로 옮기되 상대편차 보존
+        # 각 구간: 전체평균을 CAGR로 옮기되 상대편차 보존, PAVA는 안전장치로만
         means = _mono([_target + (rm - _bar) for rm in raw_means], ns)
-        wins = _mono([float(gw.iloc[b]) for b in range(NB)], ns)
+        wins = _mono(wins_raw, ns)
         tbl[h] = list(zip(means, wins))
         if h == 12:
             _drift12 = _target - _bar                  # 예측박스용 평행이동폭
