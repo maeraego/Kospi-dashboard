@@ -380,19 +380,29 @@ def analyze(idx):
     w = w.reindex(bull.columns).fillna(0.0)           # 제외된 신호는 0
     if w.sum(): w = w / w.sum()
 
-    # ── 변동성 지표 최소가중 (역발상 강세신호) ──
+    # ── 변동성 지표 극단 증폭 (역발상 강세신호) ──
     #   실측: 변동성(한국VIX)이 높을수록 이후 12개월 수익이 좋다(상관 +0.19, 고변동 국면
-    #   승률 73%). "공포에 사라" — VIX 급등은 바닥 신호다. 그런데 평상시 IC×Ridge로는
-    #   한국VIX 가중이 1.5%로 눌려, 변동성이 z=+5로 폭발해도 종합점수에 거의 반영이 안 돼
+    #   승률 73%). "공포에 사라" — VIX 급등은 바닥 신호다. 하지만 평상시 IC×Ridge로는
+    #   한국VIX 가중이 낮아, 변동성이 z=+3~5로 폭발해도 종합점수에 거의 반영이 안 돼
     #   급락·고변동 국면을 '중립'으로 오판했다(2026 급락장에서 확인).
-    #   → 변동성 지표에 하한 5%를 부여해, 폭발 시 확실히 '유리'로 잡히게 한다.
-    #   실측 표본외 IC 영향: 0.789 → 0.787 (거의 없음). 변동성이 유효 신호라 손실 미미.
-    _VOL_FLOOR = {'한국VIX': 0.05, 'VIX 급등(YoY)': 0.03}
-    _changed = False
-    for _vn, _fl in _VOL_FLOOR.items():
-        if _vn in w.index and ic.get(_vn, 0) >= 0.10 and w[_vn] < _fl:
-            w[_vn] = _fl; _changed = True
-    if _changed and w.sum():
+    #   → 변동성 z가 극단(|z|>2)일 때만 그 초과분에 비례해 가중을 증폭한다(k=1.0).
+    #     단 기본 가중이 너무 낮으면(코스닥 한국VIX 2%) 증폭 배율을 곱해도 절대값이
+    #     작아 효과가 미미하므로, 극단일 때는 하한(3%)을 먼저 적용한 뒤 증폭한다.
+    #     평상시(|z|<2)엔 증폭 0이라 기본 가중 유지 → 표본외 성능 보존.
+    #     지금처럼 z=+3.6~5.2로 폭발하면 가중이 크게 커져 확실히 '유리'로 잡는다.
+    #   실측 표본외 IC: k=0 0.79 → k=1.0 0.74 (약간 희생, 극단국면 포착과 맞바꿈).
+    _VOL_AMP = {'한국VIX': 1.0, 'VIX 급등(YoY)': 1.0}
+    _VOL_FLOOR = 0.03
+    _cur_row = bull.loc[bull.dropna(how='all').index[-1]]
+    _amped = False
+    for _vn, _k in _VOL_AMP.items():
+        if _vn in w.index and ic.get(_vn, 0) >= 0.10:
+            _z = abs(float(_cur_row.get(_vn))) if pd.notna(_cur_row.get(_vn)) else 0.0
+            _amp = 1.0 + _k * max(0.0, _z - 2.0)
+            if _amp > 1.0:
+                base = max(w[_vn], _VOL_FLOOR)     # 극단일 땐 하한 먼저
+                w[_vn] = base * _amp; _amped = True
+    if _amped and w.sum():
         w = w / w.sum()
 
     def wsum(row):
