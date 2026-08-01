@@ -427,15 +427,31 @@ def analyze(idx):
                 i += 1
         return v
     tbl = {}
+    # ── 장기 드리프트(CAGR) 보정 ──
+    #   국면별 기대수익을 '2005년 이후 실현치'로만 계산하면, 그 표본기간이 우연히
+    #   저조(글로벌 금융위기·유럽위기·박스권·긴축 반복)해서 '중립' 국면조차 연 +2%로
+    #   비관적으로 나온다. 하지만 코스피 장기 CAGR은 연 9.7%(1995~)다.
+    #   그래서 각 국면 수익을 (국면 실현수익 − 표본전체평균) + 장기CAGR 로 재정의한다.
+    #   → 국면 간 격차(상대효과)는 그대로 두고, 전체 수준만 장기 드리프트로 이동.
+    #     '중립'이 연 2% → 4%로 올라 실제 장기추세에 부합하게 된다.
+    #   주의: 이는 "미래에도 과거만큼 오른다"는 가정이며, 저성장 진입 시 과대추정 위험.
+    _Plong = df[f'{idx}_종가'].dropna()
+    _Plong = _Plong[_Plong.index.year >= 1995]
+    _yrs = max((_Plong.index[-1] - _Plong.index[0]).days / 365.25, 1)
+    _cagr_h = {}   # 기간별(3/6/12개월) 장기 드리프트(로그)
+    for h in (3, 6, 12):
+        _cagr_h[h] = float(np.log(_Plong.iloc[-1] / _Plong.iloc[0]) / _yrs) * (h / 12.0)
     for h in (3, 6, 12):
         xy = pd.concat([score.rename('s'), fwd(idx, h).rename('y')], axis=1, sort=True).dropna()
         xy['b'] = _bins(xy['s'])
+        _samp_mean = float(xy['y'].mean())           # 표본 전체 평균(그 기간 실현 드리프트)
+        _drift = _cagr_h[h] - _samp_mean             # 장기CAGR로 올리는 보정폭
         g = xy.groupby('b')['y']
         gm = g.mean().reindex(range(NB)).ffill().bfill()
         gw = g.apply(lambda z: (z > 0).mean()).reindex(range(NB)).ffill().bfill()
         ns = [int((xy['b'] == b).sum()) for b in range(NB)]
-        means = _mono([float(gm.iloc[b]) for b in range(NB)], ns)   # 평균 단조
-        wins = _mono([float(gw.iloc[b]) for b in range(NB)], ns)    # 승률도 단조
+        means = _mono([float(gm.iloc[b]) + _drift for b in range(NB)], ns)   # 드리프트 보정 + 단조
+        wins = _mono([float(gw.iloc[b]) for b in range(NB)], ns)             # 승률은 보정 안 함
         tbl[h] = list(zip(means, wins))
     edges = pd.qcut(sc, NB, labels=False, duplicates='drop', retbins=True)[1]
     cbin = int(np.clip(np.digitize(cur, edges[1:-1]), 0, NB-1))
@@ -445,8 +461,10 @@ def analyze(idx):
     tbl['NB'] = NB
 
     # ── 지수 예측 범위: 현재 점수구간의 과거 12개월 로그수익 분포 → 12개월 뒤 가격 ──
+    #   기대수익 사다리와 동일한 장기 드리프트 보정을 적용한다(표본 저조기간 편향 제거).
     _px = float(df[f'{idx}_종가'].dropna().iloc[-1])
-    _g = xy12[xy12['b'] == cbin]['y']
+    _drift12 = _cagr_h[12] - float(xy12['y'].mean())
+    _g = xy12[xy12['b'] == cbin]['y'] + _drift12
     if len(_g) >= 8:
         qs = _g.quantile([.10, .30, .50, .70, .90])
         proj = dict(px=_px, up=float((_g > 0).mean()),
@@ -460,7 +478,7 @@ def analyze(idx):
     # 각 구간(bin)의 예측 범위 — 체크박스로 국면이 바뀌면 예측 박스도 갱신하기 위해
     projbins = {}
     for _b in range(tbl.get('NB', 10)):
-        _gb = xy12[xy12['b'] == _b]['y']
+        _gb = xy12[xy12['b'] == _b]['y'] + _drift12
         if len(_gb) >= 5:
             projbins[_b] = dict(lo=float(_px * np.exp(_gb.quantile(.15))),
                                 hi=float(_px * np.exp(_gb.quantile(.85))),
@@ -686,7 +704,10 @@ def section(label, a):
                      f'{proj_svg(a, rc)}'
                      f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면에서, '
                      f'과거 12개월 실제 수익 분포를 현재가 {pj["px"]:,.0f}에 적용한 범위입니다. '
-                     f'예측이 아니라 과거 통계 분포이며, 꼬리 위험이 있습니다.</div></div>')
+                     f'<b>장기 상승추세(코스피 CAGR 연 9.7%, 1995~)를 반영</b>해 국면 수익을 보정했습니다 '
+                     f'— 국면 간 격차는 그대로 두고 전체 수준만 장기추세에 맞춥니다. '
+                     f'예측이 아니라 과거 통계 분포이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
+                     f'저성장 진입 시 과대추정될 수 있습니다.</div></div>')
     ik = a['idx']
     # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
     _scdist = json.dumps([round(float(v), 4) for v in a['sc'].dropna().tolist()])
