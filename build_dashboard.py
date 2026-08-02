@@ -1762,18 +1762,51 @@ function draw(){{
           `<text x="${{W-mR-4}}" y="${{(zeroY-4).toFixed(1)}}" fill="#3fb37f" font-size="9.5" text-anchor="end" font-family="ui-monospace">유리</text>`+
           `<text x="${{W-mR-4}}" y="${{(zeroY+12).toFixed(1)}}" fill="#e5484d" font-size="9.5" text-anchor="end" font-family="ui-monospace">불리</text>`;
   }} else {{
-    // 개별 지표: 과거 중앙값을 '유리/불리 경계선'으로 긋는다.
-    //   방향(dir)에 따라 위/아래 중 어느 쪽이 유리인지 색을 맞춘다.
+    // 개별 지표: 유리/불리 경계선.
+    //   명목지표(환율·유가·수출·통화량 등)는 통화량 팽창으로 장기 우상향하므로,
+    //   수평 중앙값선으로 비교하면 옛날 낮은 값과 지금 높은 값을 같은 선으로 오판한다.
+    //   → 이런 지표는 로그-선형 추세선(우상향)을 경계로 긋고, 나머지는 기존 수평 중앙값.
+    const meta=DATA.ic[indK];
+    const lowGood=meta&&meta.dir&&meta.dir.indexOf('낮을')>=0;
+    const upFill=lowGood?'#e5484d':'#3fb37f';
+    const dnFill=lowGood?'#3fb37f':'#e5484d';
+    const upLab=lowGood?'불리':'유리', dnLab=lowGood?'유리':'불리';
+    // 명목(추세성) 지표 목록 — 통화량과 연동돼 장기 우상향
+    const NOMINAL=['환율(원/달러)','WTI 유가','수출 YoY','수출금액','시가총액/M2','M2','M2/M1 비율','M2 증가율(YoY)'];
+    const isNominal=NOMINAL.some(k=>indK.indexOf(k)>=0)||indK.indexOf('환율')>=0||indK.indexOf('유가')>=0;
+    // 로그-선형 추세 적합 (양수 값만)
+    let trend=null;
+    if(isNominal){{
+      let sx=0,sy=0,sxx=0,sxy=0,cnt=0;
+      for(let i=0;i<n;i++){{const v=ind[i]; if(v==null||v<=0) continue;
+        const ly=Math.log(v); sx+=i; sy+=ly; sxx+=i*i; sxy+=i*ly; cnt++;}}
+      if(cnt>10){{const dn=cnt*sxx-sx*sx;
+        if(Math.abs(dn)>1e-9){{const sl=(cnt*sxy-sx*sy)/dn, ic_=(sy-sl*sx)/cnt;
+          trend={{slope:sl,intercept:ic_}};}}}}
+    }}
     const iv=ind.filter(v=>v!=null).sort((a,b)=>a-b);
-    if(iv.length>10){{
+    if(trend){{
+      // 우상향 추세선: 각 x에서 exp(slope*i+intercept)
+      const y0=Yi(Math.exp(trend.intercept)), y1v=Yi(Math.exp(trend.slope*(n-1)+trend.intercept));
+      // 추세선 위/아래를 유불리 음영으로 (폴리곤)
+      let above='M'+mL+' '+mT+' ', below='M'+mL+' '+(H-mB)+' ';
+      let tpath='';
+      for(let i=0;i<n;i++){{const ty=Yi(Math.exp(trend.slope*i+trend.intercept));
+        tpath+=(i===0?'M':'L')+X(i).toFixed(1)+' '+ty.toFixed(1)+' ';}}
+      // 위쪽 영역 폴리곤
+      let poly='';
+      for(let i=0;i<n;i++){{poly+=(i===0?'M':'L')+X(i).toFixed(1)+' '+Yi(Math.exp(trend.slope*i+trend.intercept)).toFixed(1)+' ';}}
+      const polyUp=`${{poly}}L ${{(W-mR).toFixed(1)}} ${{mT}} L ${{mL}} ${{mT}} Z`;
+      const polyDn=`${{poly}}L ${{(W-mR).toFixed(1)}} ${{(H-mB).toFixed(1)}} L ${{mL}} ${{(H-mB).toFixed(1)}} Z`;
+      shade=`<path d="${{polyUp}}" fill="${{upFill}}" opacity="0.05"/>`+
+            `<path d="${{polyDn}}" fill="${{dnFill}}" opacity="0.05"/>`+
+            `<path d="${{tpath}}" fill="none" stroke="#5f7291" stroke-dasharray="4 3" stroke-width="1"/>`+
+            `<text x="${{W-mR-4}}" y="${{(y1v-4).toFixed(1)}}" fill="${{upFill}}" font-size="9.5" text-anchor="end" font-family="ui-monospace">${{upLab}}</text>`+
+            `<text x="${{W-mR-4}}" y="${{(y1v+12).toFixed(1)}}" fill="${{dnFill}}" font-size="9.5" text-anchor="end" font-family="ui-monospace">${{dnLab}}</text>`+
+            `<text x="${{mL+4}}" y="${{(y0-4).toFixed(1)}}" fill="#8b98ab" font-size="9" font-family="ui-monospace">장기추세선</text>`;
+    }} else if(iv.length>10){{
       const medV=iv[Math.floor(iv.length/2)];
       const medY=Yi(medV);
-      const meta=DATA.ic[indK];
-      // dir 문자열에 '낮을수록 강세'면 낮은 쪽(아래)이 유리
-      const lowGood=meta&&meta.dir&&meta.dir.indexOf('낮을')>=0;
-      const upFill=lowGood?'#e5484d':'#3fb37f';   // 위쪽 색
-      const dnFill=lowGood?'#3fb37f':'#e5484d';   // 아래쪽 색
-      const upLab=lowGood?'불리':'유리', dnLab=lowGood?'유리':'불리';
       shade=`<rect x="${{mL}}" y="${{mT}}" width="${{W-mL-mR}}" height="${{medY-mT}}" fill="${{upFill}}" opacity="0.05"/>`+
             `<rect x="${{mL}}" y="${{medY}}" width="${{W-mL-mR}}" height="${{H-mB-medY}}" fill="${{dnFill}}" opacity="0.05"/>`+
             `<line x1="${{mL}}" y1="${{medY.toFixed(1)}}" x2="${{W-mR}}" y2="${{medY.toFixed(1)}}" stroke="#5f7291" stroke-dasharray="4 3"/>`+
