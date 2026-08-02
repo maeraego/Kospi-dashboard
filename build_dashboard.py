@@ -762,32 +762,43 @@ def render_forward(tbl, cbin, sc=None, ik=''):
 def proj_svg(a, color):
     pj = a['proj']
     if not pj: return ''
+    ik = a['idx']
     W, H = 460, 96
     xs = sorted(pj['samples'])
-    lo_ax, hi_ax = min(xs) * 0.98, max(xs) * 1.02
+    # 축 범위: 체크박스로 국면이 바뀌면 다른 bin의 밴드도 보여야 하므로,
+    #   모든 구간의 90% 밴드 상·하한까지 포함하도록 넓힌다.
+    _allx = list(xs)
+    for _bv in a['tbl'].get('projbins', {}).values():
+        _b90 = _bv['bands'].get(90)
+        if _b90: _allx += [_b90[0], _b90[1]]
+    lo_ax, hi_ax = min(_allx) * 0.98, max(_allx) * 1.02
     X = lambda v: 8 + (v - lo_ax) / (hi_ax - lo_ax) * (W - 16)
-    # 히스토그램
+    # 히스토그램(고정 배경)
     n = 26
     cnt, edges = np.histogram(xs, bins=n, range=(lo_ax, hi_ax))
     cmax = max(cnt) or 1
     bars = ''.join(
         f'<rect x="{X(edges[i]):.1f}" y="{60-(c/cmax)*46:.1f}" width="{(W-16)/n-1:.1f}" '
         f'height="{(c/cmax)*46:.1f}" fill="#2b3648" rx="1"/>' for i, c in enumerate(cnt))
-    band = (f'<rect x="{X(pj["lo"]):.1f}" y="12" width="{X(pj["hi"])-X(pj["lo"]):.1f}" height="48" '
+    _b50 = pj['bands'][50]
+    # band/med/labels 는 id를 부여해 JS가 국면·구간% 바뀔 때 다시 그린다.
+    band = (f'<rect id="pjband-{ik}" x="{X(_b50[0]):.1f}" y="12" width="{X(_b50[1])-X(_b50[0]):.1f}" height="48" '
             f'fill="{color}" opacity="0.12" rx="3"/>')
-    lines = ''
-    for v, c, w in [(pj['px'], '#e6edf3', 2), (pj['med'], color, 2)]:
-        lines += f'<line x1="{X(v):.1f}" y1="10" x2="{X(v):.1f}" y2="62" stroke="{c}" stroke-width="{w}"/>'
-    labs = (f'<text x="{X(pj["lo"]):.1f}" y="76" fill="#8b98ab" font-size="10" text-anchor="middle" '
-            f'font-family="ui-monospace">{pj["lo"]:,.0f}</text>'
-            f'<text x="{X(pj["hi"]):.1f}" y="76" fill="#8b98ab" font-size="10" text-anchor="middle" '
-            f'font-family="ui-monospace">{pj["hi"]:,.0f}</text>'
+    pxline = f'<line x1="{X(pj["px"]):.1f}" y1="10" x2="{X(pj["px"]):.1f}" y2="62" stroke="#e6edf3" stroke-width="2"/>'
+    medline = f'<line id="pjmedln-{ik}" x1="{X(pj["med"]):.1f}" y1="10" x2="{X(pj["med"]):.1f}" y2="62" stroke="{color}" stroke-width="2"/>'
+    labs = (f'<text id="pjlo-{ik}" x="{X(_b50[0]):.1f}" y="76" fill="#8b98ab" font-size="10" text-anchor="middle" '
+            f'font-family="ui-monospace">{_b50[0]:,.0f}</text>'
+            f'<text id="pjhi-{ik}" x="{X(_b50[1]):.1f}" y="76" fill="#8b98ab" font-size="10" text-anchor="middle" '
+            f'font-family="ui-monospace">{_b50[1]:,.0f}</text>'
             f'<text x="{X(pj["px"]):.1f}" y="90" fill="#e6edf3" font-size="10" text-anchor="middle" '
             f'font-family="ui-monospace">현재 {pj["px"]:,.0f}</text>'
-            f'<text x="{X(pj["med"]):.1f}" y="8" fill="{color}" font-size="10" text-anchor="middle" '
+            f'<text id="pjmedlab-{ik}" x="{X(pj["med"]):.1f}" y="8" fill="{color}" font-size="10" text-anchor="middle" '
             f'font-family="ui-monospace">중앙 {pj["med"]:,.0f}</text>')
+    # 축 범위·현재가·색을 JS에 넘겨 좌표 변환에 사용
+    axis = (f'<script>window.PJAX=window.PJAX||{{}};window.PJAX["{ik}"]='
+            f'{{lo:{lo_ax:.2f},hi:{hi_ax:.2f},W:{W},px:{pj["px"]:.2f},color:"{color}"}};</script>')
     return (f'<svg viewBox="0 0 {W} {H}" width="100%" preserveAspectRatio="xMidYMid meet">'
-            f'{band}{bars}{lines}{labs}</svg>')
+            f'{band}{bars}{pxline}{medline}{labs}</svg>{axis}')
 
 def section(label, a):
     rl, rc = regime(a['pct'])
@@ -1728,35 +1739,46 @@ function recalc(idx){{
     if(b===bin){{ row.classList.add('here'); if(tw) tw.innerHTML='<span class="lad-tag">지금 여기</span>'; }}
     else{{ row.classList.remove('here'); if(tw) tw.innerHTML=''; }}
   }}
-  // ── 12개월 뒤 지수 예측 박스도 갱신 ──
-  const pjb=(window.PJBIN&&window.PJBIN[idx])||{{}};
-  const fmt=n=>Math.round(n).toLocaleString();
-  if(pjb[bin]){{
-    const v=pjb[bin];
-    const sel=document.getElementById('pjsel-'+idx);
-    const p=sel?sel.value:'50';
-    const bd=(v.bands&&v.bands[p])||v.bands['50'];
-    window.__CURBIN=window.__CURBIN||{{}}; window.__CURBIN[idx]=bin;   // setBand용
-    const rng=document.getElementById('pjrange-'+idx);
-    if(rng&&bd) rng.textContent=fmt(bd[0])+' ~ '+fmt(bd[1]);
-    const md=document.getElementById('pjmed-'+idx);
-    if(md) md.textContent='중앙 '+fmt(v.med)+' · 상승확률 '+Math.round(v.up*100)+'%';
-    const sc2=document.getElementById('pjscore-'+idx);
-    if(sc2) sc2.textContent=(score>=0?'+':'')+score.toFixed(2)+'('+lab+')';
-  }}
+  // ── 12개월 뒤 지수 예측 박스도 갱신 (텍스트 + 히스토그램 차트 전부) ──
+  window.__CURBIN=window.__CURBIN||{{}}; window.__CURBIN[idx]=bin;
+  updateProjChart(idx, bin);
+  const sc2=document.getElementById('pjscore-'+idx);
+  if(sc2){{ const lab2=_regimeLabel((dist.length?dist.filter(v=>v<score).length/dist.length:0.5))[0];
+    sc2.textContent=(score>=0?'+':'')+score.toFixed(2)+'('+lab2+')'; }}
 }}
 
-// 신뢰구간(%) 선택 변경 시 예측 밴드만 다시 그림
-function setBand(idx){{
+// 예측 박스(범위텍스트·중앙·상승확률·히스토그램 밴드/중앙선/라벨)를 국면·구간%에 맞게 다시 그림
+function updateProjChart(idx, bin){{
   const pjb=(window.PJBIN&&window.PJBIN[idx])||{{}};
-  const bin=(window.__CURBIN&&window.__CURBIN[idx]!=null)?window.__CURBIN[idx]:(window.CBIN&&window.CBIN[idx]);
+  const v=pjb[bin]; if(!v) return;
   const sel=document.getElementById('pjsel-'+idx);
+  const p=sel?sel.value:'50';
+  const bd=(v.bands&&v.bands[p])||v.bands['50'];
   const fmt=n=>Math.round(n).toLocaleString();
-  if(pjb[bin]&&sel){{
-    const bd=pjb[bin].bands[sel.value];
-    const rng=document.getElementById('pjrange-'+idx);
-    if(rng&&bd) rng.textContent=fmt(bd[0])+' ~ '+fmt(bd[1]);
-  }}
+  // 상단 텍스트
+  const rng=document.getElementById('pjrange-'+idx);
+  if(rng&&bd) rng.textContent=fmt(bd[0])+' ~ '+fmt(bd[1]);
+  const md=document.getElementById('pjmed-'+idx);
+  if(md) md.textContent='중앙 '+fmt(v.med)+' · 상승확률 '+Math.round(v.up*100)+'%';
+  // 히스토그램 밴드/중앙선/라벨 좌표 갱신
+  const ax=(window.PJAX&&window.PJAX[idx]); if(!ax||!bd) return;
+  const X=val=>8+(val-ax.lo)/(ax.hi-ax.lo)*(ax.W-16);
+  const band=document.getElementById('pjband-'+idx);
+  if(band){{ band.setAttribute('x',X(bd[0]).toFixed(1)); band.setAttribute('width',(X(bd[1])-X(bd[0])).toFixed(1)); }}
+  const ml=document.getElementById('pjmedln-'+idx);
+  if(ml){{ ml.setAttribute('x1',X(v.med).toFixed(1)); ml.setAttribute('x2',X(v.med).toFixed(1)); }}
+  const lo_=document.getElementById('pjlo-'+idx);
+  if(lo_){{ lo_.setAttribute('x',X(bd[0]).toFixed(1)); lo_.textContent=fmt(bd[0]); }}
+  const hi_=document.getElementById('pjhi-'+idx);
+  if(hi_){{ hi_.setAttribute('x',X(bd[1]).toFixed(1)); hi_.textContent=fmt(bd[1]); }}
+  const mlab=document.getElementById('pjmedlab-'+idx);
+  if(mlab){{ mlab.setAttribute('x',X(v.med).toFixed(1)); mlab.textContent='중앙 '+fmt(v.med); }}
+}}
+
+// 신뢰구간(%) 선택 변경 시 — 현재 국면(bin) 기준으로 전체 다시 그림
+function setBand(idx){{
+  const bin=(window.__CURBIN&&window.__CURBIN[idx]!=null)?window.__CURBIN[idx]:(window.CBIN&&window.CBIN[idx]);
+  updateProjChart(idx, bin);
 }}
 
 function niceMinMax(a){{let v=a.filter(x=>x!=null);let mn=Math.min(...v),mx=Math.max(...v);
