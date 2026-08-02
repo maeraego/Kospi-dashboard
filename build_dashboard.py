@@ -547,18 +547,22 @@ def analyze(idx):
         _center = _cagr_log + _prem       # 로그: 장기추세 + 국면프리미엄(절반)
         _med = seg.median()
         _rsd = float((seg - _med).abs().median() * 1.4826)   # 로버스트 표준편차
-        return dict(lo=float(_px * np.exp(_center - 1.04 * _rsd)),
-                    hi=float(_px * np.exp(_center + 1.04 * _rsd)),
+        # 여러 신뢰구간을 미리 계산(사용자가 30/50/70/90% 선택). z: 정규분포 양측 분위.
+        _Z = {30: 0.385, 50: 0.674, 70: 1.036, 90: 1.645}
+        _bands = {p: [float(_px * np.exp(_center - z * _rsd)),
+                      float(_px * np.exp(_center + z * _rsd))] for p, z in _Z.items()}
+        return dict(lo=float(_px * np.exp(_center - 1.036 * _rsd)),
+                    hi=float(_px * np.exp(_center + 1.036 * _rsd)),
                     med=float(_px * np.exp(_center)),
                     up=float((seg > 0).mean()),
-                    center=_center, rsd=_rsd)
+                    center=_center, rsd=_rsd, bands=_bands)
 
     _pc = _proj_for(cbin)
     if _pc is not None:
         _c, _rsd = _pc['center'], _pc['rsd']
         proj = dict(px=_px, up=_pc['up'],
                     p=[float(_px * np.exp(_c + z * _rsd)) for z in (-1.28, -0.52, 0.0, 0.52, 1.28)],
-                    lo=_pc['lo'], hi=_pc['hi'], med=_pc['med'],
+                    lo=_pc['lo'], hi=_pc['hi'], med=_pc['med'], bands=_pc['bands'],
                     samples=[float(_px * np.exp(v)) for v in
                              (xy12['y'] * _SHRINK + (_cagr_log - _bar12 * _SHRINK)).values])
     else:
@@ -568,7 +572,8 @@ def analyze(idx):
     for _b in range(NB):
         _pb = _proj_for(_b)
         if _pb is not None:
-            projbins[_b] = dict(lo=_pb['lo'], hi=_pb['hi'], med=_pb['med'], up=_pb['up'])
+            projbins[_b] = dict(lo=_pb['lo'], hi=_pb['hi'], med=_pb['med'], up=_pb['up'],
+                                bands=_pb['bands'])
     tbl['projbins'] = projbins
     tbl['px_now'] = _px
 
@@ -791,9 +796,15 @@ def section(label, a):
     pj = a['proj']
     proj_html = ''
     if pj:
+        _b50 = pj['bands'][50]
         proj_html = (f'<div class="projbox"><div class="proj-h">'
                      f'<span>12개월 뒤 지수 예측 <b id="pjrange-{a["idx"]}" style="color:{rc}">'
-                     f'{pj["lo"]:,.0f} ~ {pj["hi"]:,.0f}</b> <span class="proj-p">(70% 구간)</span></span>'
+                     f'{_b50[0]:,.0f} ~ {_b50[1]:,.0f}</b> '
+                     f'<select class="proj-sel" id="pjsel-{a["idx"]}" onchange="setBand(\'{a["idx"]}\')">'
+                     f'<option value="30">30% 구간</option>'
+                     f'<option value="50" selected>50% 구간</option>'
+                     f'<option value="70">70% 구간</option>'
+                     f'<option value="90">90% 구간</option></select></span>'
                      f'<span class="proj-med" id="pjmed-{a["idx"]}">중앙 {pj["med"]:,.0f} · 상승확률 {pj["up"]:.0%}</span></div>'
                      f'{proj_svg(a, rc)}'
                      f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면 기준, '
@@ -801,6 +812,7 @@ def section(label, a):
                      f'중심으로, 국면 프리미엄을 절반(50%)만 얹어 추정한 범위입니다. '
                      f'과거 "유리 국면"은 대개 폭락 직후 바닥이라 그때 반등률(+40~200%)을 지금 고점에 '
                      f'그대로 적용하면 과대추정되므로, 국면 효과를 절반만 반영해 억제했습니다. '
+                     f'구간(%)은 그 국면 과거 변동성 기준 신뢰구간입니다. '
                      f'예측이 아니라 과거 통계 기반 참고치이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
                      f'저성장 진입 시 과대추정될 수 있습니다.</div></div>')
     ik = a['idx']
@@ -812,8 +824,9 @@ def section(label, a):
                         for b in range(_NB)})
     _binmh = json.dumps({str(b): {str(h): [round(a['tbl'][h][b][0], 4), round(a['tbl'][h][b][1], 4)]
                                   for h in (3, 6, 12)} for b in range(_NB)})
-    # 각 구간의 예측 범위(체크박스로 국면 바뀌면 예측박스 갱신)
-    _pjb = json.dumps({str(b): [round(v['lo']), round(v['hi']), round(v['med']), round(v['up'], 3)]
+    # 각 구간의 예측 범위(체크박스로 국면 바뀌면 예측박스 갱신) + 신뢰구간별 밴드
+    _pjb = json.dumps({str(b): {'med': round(v['med']), 'up': round(v['up'], 3),
+                                'bands': {str(p): [round(x[0]), round(x[1])] for p, x in v['bands'].items()}}
                        for b, v in a['tbl'].get('projbins', {}).items()})
     return (f'<div class="sec" data-idx="{ik}"><div class="sec-head">'
             f'<div class="sec-t">{label} <span class="sec-px">{a["px"]:,.1f}</span></div>'
@@ -1318,6 +1331,8 @@ else:
 comp = {
     'KOSPI': df['KOSPI_종가'], 'KOSDAQ': df['KOSDAQ_종가'],
     'PER': df['KOSPI_PER'], 'PBR': df['KOSPI_PBR'], 'ROE': df['KOSPI_ROE'],
+    '선행 PBR': (1.0 / (1.0 / df['KOSPI_PBR'].where(df['KOSPI_PBR'] > 0)
+                        + (1.0 / df['예상PER'].where(df['예상PER'] > 0)) * 0.65)) if HAS_FPE else None,
     '순수출': df['무역수지'] if '무역수지' in df else df['수출금액'],
     '예상PER': df['예상PER'] if HAS_FPE else np.nan,
     '경기선행지수': df['선행지수'], '신용스프레드': df['신용스프레드'],
@@ -1368,6 +1383,7 @@ for _n in AK['ic']:
 DATA['scoremeta'] = {'method': '각 지표를 강세방향 z-score로 변환 → 예측력(IC) 기반 Ridge 다변량 가중합. 양수=유리, 음수=불리.'}
 # 드롭다운 순서 = 신호 분해의 번호 순서(가중치 큰 순)와 일치시킴
 SIG2COL = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '한국VIX': '한국VIX',
+           '선행 PBR': '선행 PBR',
            '환율(원/달러)': '환율', '경기선행지수': '경기선행지수', '신용스프레드': '신용스프레드',
            '일드커브': '일드커브', '국고채10년': '국고채10년',
            'WTI 유가': 'WTI 유가', '미국10년 YoY': '미국10년 YoY',
@@ -1429,6 +1445,7 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .proj-h{{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:13px;margin-bottom:6px}}
 .proj-h b{{font-family:var(--mono);font-size:15px}}
 .proj-p{{color:var(--mut);font-size:11px}}
+.proj-sel{{background:#0f1626;color:#b9c4d4;border:1px solid var(--line);border-radius:5px;font-size:11px;padding:1px 4px;font-family:var(--mono);cursor:pointer;margin-left:4px}}
 .proj-med{{color:#b9c4d4;font-family:var(--mono);font-size:12px}}
 .proj-cap{{font-size:10.5px;color:#8b98ab;margin-top:5px;line-height:1.5}}
 .expbar{{display:flex;align-items:baseline;gap:14px;background:#131b2a;border:1px solid var(--line);
@@ -1667,14 +1684,18 @@ function recalc(idx){{
     sp.textContent='백분위 '+Math.round(pct*100)+'%'+(Math.abs(diff)>0.001?'  (기본 대비 '+(diff>=0?'+':'')+diff.toFixed(2)+')':'');
   }}
   // ── 새 점수가 어느 구간인지 찾아 '기대수익'도 갱신 ──
-  //   전부 켜져 있으면 원본 구간(CBIN)을 그대로 써서 완벽히 복구한다
-  //   (경계값 부동소수점 비교로 bin이 튀는 것을 원천 차단).
-  const edges=(window.QEDGES&&window.QEDGES[idx])||[];
+  //   [중요] 구간(bin)은 점수의 '백분위 순위 × NB'로 정한다(_bins와 동일 방식).
+  //   과거엔 qedges(2~4개 경계)로 bin을 찾았는데, 사다리가 7단계로 바뀌며 경계 수가
+  //   안 맞아, 체크 해제 시 bin이 엉뚱하게(예: 최유리인데 중간) 튀어 예측이 -1%로
+  //   무너지는 버그가 있었다. SCDIST(과거 점수분포)로 백분위를 구해 NB등분한다.
+  const NB=(window.BINRET&&window.BINRET[idx])?Object.keys(window.BINRET[idx]).length:7;
   let bin;
   if(allOn && window.CBIN && window.CBIN[idx]!=null){{
     bin=window.CBIN[idx];
   }} else {{
-    bin=0; while(bin<edges.length && score>=edges[bin]) bin++;
+    // 점수 백분위(pct) → 구간. dist 대비 순위로 계산해 _bins와 일치시킴.
+    const p=dist.length?dist.filter(v=>v<score).length/dist.length:0.5;
+    bin=Math.min(Math.floor(p*NB), NB-1);
   }}
   const ret=(window.BINRET&&window.BINRET[idx])||{{}};
   const mh=(window.BINMH&&window.BINMH[idx])||{{}};
@@ -1700,7 +1721,6 @@ function recalc(idx){{
     }});
   }}
   // 사다리(구간표)에서 '지금 여기' 위치 이동
-  const NB=(window.BINRET&&window.BINRET[idx])?Object.keys(window.BINRET[idx]).length:10;
   for(let b=0;b<NB;b++){{
     const row=document.getElementById('lad-'+idx+'-'+b);
     const tw=document.getElementById('ladtag-'+idx+'-'+b);
@@ -1712,13 +1732,30 @@ function recalc(idx){{
   const pjb=(window.PJBIN&&window.PJBIN[idx])||{{}};
   const fmt=n=>Math.round(n).toLocaleString();
   if(pjb[bin]){{
-    const [lo,hi,med,up]=pjb[bin];
+    const v=pjb[bin];
+    const sel=document.getElementById('pjsel-'+idx);
+    const p=sel?sel.value:'50';
+    const bd=(v.bands&&v.bands[p])||v.bands['50'];
+    window.__CURBIN=window.__CURBIN||{{}}; window.__CURBIN[idx]=bin;   // setBand용
     const rng=document.getElementById('pjrange-'+idx);
-    if(rng) rng.textContent=fmt(lo)+' ~ '+fmt(hi);
+    if(rng&&bd) rng.textContent=fmt(bd[0])+' ~ '+fmt(bd[1]);
     const md=document.getElementById('pjmed-'+idx);
-    if(md) md.textContent='중앙 '+fmt(med)+' · 상승확률 '+Math.round(up*100)+'%';
+    if(md) md.textContent='중앙 '+fmt(v.med)+' · 상승확률 '+Math.round(v.up*100)+'%';
     const sc2=document.getElementById('pjscore-'+idx);
     if(sc2) sc2.textContent=(score>=0?'+':'')+score.toFixed(2)+'('+lab+')';
+  }}
+}}
+
+// 신뢰구간(%) 선택 변경 시 예측 밴드만 다시 그림
+function setBand(idx){{
+  const pjb=(window.PJBIN&&window.PJBIN[idx])||{{}};
+  const bin=(window.__CURBIN&&window.__CURBIN[idx]!=null)?window.__CURBIN[idx]:(window.CBIN&&window.CBIN[idx]);
+  const sel=document.getElementById('pjsel-'+idx);
+  const fmt=n=>Math.round(n).toLocaleString();
+  if(pjb[bin]&&sel){{
+    const bd=pjb[bin].bands[sel.value];
+    const rng=document.getElementById('pjrange-'+idx);
+    if(rng&&bd) rng.textContent=fmt(bd[0])+' ~ '+fmt(bd[1]);
   }}
 }}
 
@@ -1862,6 +1899,11 @@ function draw(){{
 }}
 document.getElementById('baseSel').onchange=draw;
 document.getElementById('indSel').onchange=draw;
+// 예측 밴드 선택용: 초기 구간(bin)을 현재 국면(CBIN)으로 설정
+window.__CURBIN=window.__CURBIN||{{}};
+for(const _ix of ['KOSPI','KOSDAQ']){{
+  if(window.CBIN&&window.CBIN[_ix]!=null) window.__CURBIN[_ix]=window.CBIN[_ix];
+}}
 draw();
 let rawBuilt=false;
 async function doUpdate(){{
