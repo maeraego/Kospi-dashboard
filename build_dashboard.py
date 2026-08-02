@@ -358,6 +358,14 @@ def analyze(idx):
     #   표본이 짧고, 최근 3년 +199% 급등해 z-score가 극단으로 치솟아 판정을 왜곡한다.
     #   → 통화량 대비 밸류는 차트로 관찰하되, 예측 가중은 PBR·예상PER에 맡긴다.
     REF_ONLY = {'시가총액/M2'}
+    #   M2/M1 비율: 코스닥 IC 0.16으로 예측력이 약한데(PER IC 0.45의 1/3), 다른 신호와
+    #   안 겹쳐 Ridge가 4%대 가중을 준다 — 예측력 대비 과하다(제거해도 표본외 0.581→0.569,
+    #   손실 미미). 통화량 지표는 차트 참고용으로만 남기고 가중에서 뺀다.
+    #   수출 YoY: 코스닥 IC −0.17로 경제상식(수출↑=강세)과 반대 방향이고 예측력도 약하다.
+    #     제거 시 표본외가 오히려 개선(0.559→0.566). M2 증가율(IC 0.16, 약함)도 함께 빼면
+    #     0.583까지 오른다. 방향 불안정·약예측력 신호가 다변량 가중을 왜곡하던 것.
+    #   → 이 셋은 차트 참고용으로만 남기고 예측 가중에서 제외한다.
+    REF_ONLY = REF_ONLY | {'M2/M1 비율', '수출 YoY', 'M2 증가율(YoY)'}
     cols = [c for c in bull.columns
             if ic[c] >= IC_MIN and _nobs.get(c, 0) >= MIN_OBS and c not in REF_ONLY]
     if len(cols) < 3:                                  # 너무 적으면 완화
@@ -447,7 +455,7 @@ def analyze(idx):
     #   줄어, 라벨과 실제 구간이 어긋나 역전이 생겼다. rank 기반으로 항상 NB구간을
     #   보장하고, 표본이 적은 구간의 평균·승률이 튀어 순서가 뒤집히는 것은
     #   등위회귀(isotonic, 표본수 가중)로 '평균과 승률 모두' 단조 증가를 강제한다.
-    NB = 10                                        # 점수구간 개수 (10단계)
+    NB = 7                                         # 점수구간 개수 (7단계)
     def _bins(s):
         return np.clip((s.rank(pct=True) * NB).astype(int).clip(0, NB-1), 0, NB-1)
     def _mono(vals, ns):
@@ -471,10 +479,16 @@ def analyze(idx):
     #   → 각 십분위를 '중심 ±20% 표본이 겹치는 이동창(rolling)'으로 계산해 부드럽게 만든다.
     #   IC는 0.5로 강하니, 겹침 평균만으로도 자연스러운 단조가 나와 PAVA 왜곡이 사라진다.
     #   주의: "미래에도 과거만큼 오른다"는 가정. 저성장 진입 시 과대추정 위험.
+    #   CAGR: 우리 시계열은 1995년(코스피 926)부터라 이전 고성장기(1980~94)가 빠져 6.5%로
+    #   낮게 나온다. 코스피 공식 기준점은 1980.1.4=100이므로, 이를 시작점으로 삼아 진짜
+    #   장기 CAGR(약 9.5%)을 쓴다. 현재가/100 을 1980년부터의 연수로 환산.
     _Plong = df[f'{idx}_종가'].dropna()
-    _Plong = _Plong[_Plong.index.year >= 1995]
-    _yrs = max((_Plong.index[-1] - _Plong.index[0]).days / 365.25, 1)
-    _cagr_log = float(np.log(_Plong.iloc[-1] / _Plong.iloc[0]) / _yrs)   # 연 로그수익
+    if idx == 'KOSPI':
+        _base_val, _base_dt = 100.0, pd.Timestamp('1980-01-04')
+    else:  # 코스닥 기준점 1996.7.1 = 1000
+        _base_val, _base_dt = 1000.0, pd.Timestamp('1996-07-01')
+    _yrs = max((_Plong.index[-1] - _base_dt).days / 365.25, 1)
+    _cagr_log = float(np.log(_Plong.iloc[-1] / _base_val) / _yrs)   # 연 로그수익(장기)
 
     def _smooth_bins(xs, ys, nb):
         # 점수 오름차순 정렬 후, 각 십분위 중심 ±20% 표본이 겹치는 이동창 평균/승률
@@ -499,8 +513,6 @@ def analyze(idx):
         means = _mono([_target + (rm - _bar) for rm in raw_means], ns)
         wins = _mono(wins_raw, ns)
         tbl[h] = list(zip(means, wins))
-        if h == 12:
-            _drift12 = _target - _bar                  # 예측박스용 평행이동폭
     edges = pd.qcut(sc, NB, labels=False, duplicates='drop', retbins=True)[1]
     cbin = int(np.clip(np.digitize(cur, edges[1:-1]), 0, NB-1))
     xy12 = pd.concat([score.rename('s'), fwd(idx, 12).rename('y')], axis=1, sort=True).dropna()
@@ -508,29 +520,55 @@ def analyze(idx):
     tbl['n12'] = int((xy12['b'] == cbin).sum())
     tbl['NB'] = NB
 
-    # ── 지수 예측 범위: 현재 점수구간의 과거 12개월 로그수익 분포 → 12개월 뒤 가격 ──
-    #   기대수익 사다리와 동일한 장기 드리프트 보정을 적용한다(중립을 장기CAGR에 앵커).
+    # ── 지수 예측 범위: D방식 (현재가 × 장기추세 + 국면프리미엄 절반) ──
+    #   [문제] 과거 "최유리 국면"은 대부분 폭락 직후 바닥(IMF·금융위기·코로나)이라, 그때의
+    #   12개월 수익이 +40~200%다. 이걸 그대로 현재가에 적용하면, 지금처럼 지수가 이미
+    #   고점(6,595)인데도 +49%(9,900)로 과대추정된다 — 출발점이 바닥이 아닌데 바닥 반등률을
+    #   붙이는 오류.
+    #   [D방식] 예측 중심 = 현재가 × exp(CAGR + 국면프리미엄×0.5).
+    #     · 베이스는 장기추세(CAGR): 현재가에서 출발하므로 고점/저점 출발을 그대로 존중.
+    #     · 국면프리미엄 = (그 국면 과거수익 − 전체평균), 축소계수 0.5로 절반만 반영.
+    #       → 유리하면 CAGR 위로, 불리하면 CAGR 아래로. 단 과거 극단 반등률을 절반만 실어
+    #         비현실적 폭등 예측을 억제한다.
+    #     · 밴드폭은 그 국면의 로버스트 변동성(MAD×1.4826)으로 ±1.04σ(약 70% 구간).
     _px = float(df[f'{idx}_종가'].dropna().iloc[-1])
-    _g = xy12[xy12['b'] == cbin]['y'] + _drift12
-    if len(_g) >= 8:
-        qs = _g.quantile([.10, .30, .50, .70, .90])
-        proj = dict(px=_px, up=float((_g > 0).mean()),
-                    p=[float(_px * np.exp(qs.loc[q])) for q in (.10, .30, .50, .70, .90)],
-                    lo=float(_px * np.exp(_g.quantile(.15))),
-                    hi=float(_px * np.exp(_g.quantile(.85))),
-                    med=float(_px * np.exp(_g.median())),
-                    samples=[float(_px * np.exp(v)) for v in _g.values])
+    _SHRINK = 0.5
+    _bar12 = sum(raw_means) / NB          # 12개월 구간평균들의 평균(위 루프의 마지막 h=12 값)
+    # 예측용 정렬표본(점수 오름차순) + 창 크기
+    xy12s = xy12.sort_values('s').reset_index(drop=True)
+    _win12 = max(int(len(xy12s) * 0.20), 8)
+
+    def _proj_for(_b):
+        cc = int((_b + 0.5) / NB * len(xy12s)); l = max(0, cc - _win12 // 2); h_ = min(len(xy12s), cc + _win12 // 2)
+        seg = xy12s['y'].iloc[l:h_]
+        if len(seg) < 5:
+            return None
+        _prem = (float(seg.mean()) - _bar12) * _SHRINK
+        _center = _cagr_log + _prem       # 로그: 장기추세 + 국면프리미엄(절반)
+        _med = seg.median()
+        _rsd = float((seg - _med).abs().median() * 1.4826)   # 로버스트 표준편차
+        return dict(lo=float(_px * np.exp(_center - 1.04 * _rsd)),
+                    hi=float(_px * np.exp(_center + 1.04 * _rsd)),
+                    med=float(_px * np.exp(_center)),
+                    up=float((seg > 0).mean()),
+                    center=_center, rsd=_rsd)
+
+    _pc = _proj_for(cbin)
+    if _pc is not None:
+        _c, _rsd = _pc['center'], _pc['rsd']
+        proj = dict(px=_px, up=_pc['up'],
+                    p=[float(_px * np.exp(_c + z * _rsd)) for z in (-1.28, -0.52, 0.0, 0.52, 1.28)],
+                    lo=_pc['lo'], hi=_pc['hi'], med=_pc['med'],
+                    samples=[float(_px * np.exp(v)) for v in
+                             (xy12['y'] * _SHRINK + (_cagr_log - _bar12 * _SHRINK)).values])
     else:
         proj = None
-    # 각 구간(bin)의 예측 범위 — 체크박스로 국면이 바뀌면 예측 박스도 갱신하기 위해
+    # 각 구간(bin)의 예측 범위 — 체크박스로 국면이 바뀌면 예측 박스도 갱신
     projbins = {}
-    for _b in range(tbl.get('NB', 10)):
-        _gb = xy12[xy12['b'] == _b]['y'] + _drift12
-        if len(_gb) >= 5:
-            projbins[_b] = dict(lo=float(_px * np.exp(_gb.quantile(.15))),
-                                hi=float(_px * np.exp(_gb.quantile(.85))),
-                                med=float(_px * np.exp(_gb.median())),
-                                up=float((_gb > 0).mean()))
+    for _b in range(NB):
+        _pb = _proj_for(_b)
+        if _pb is not None:
+            projbins[_b] = dict(lo=_pb['lo'], hi=_pb['hi'], med=_pb['med'], up=_pb['up'])
     tbl['projbins'] = projbins
     tbl['px_now'] = _px
 
@@ -681,12 +719,19 @@ def render_forward(tbl, cbin, sc=None, ik=''):
         mh += (f'<div class="mh"><span class="mh-h">{h}개월</span>'
                f'<span class="mh-m" id="mhm-{ik}-{h}" style="color:{c}">{m:+.0%}</span>'
                f'<span class="mh-w" id="mhw-{ik}-{h}">승률 {wn:.0%}</span></div>')
-    # 10단계 라벨: 점수(국면) 백분위 + 유불리 표시.
-    #   b가 높을수록 종합점수 상위(유리), 낮을수록 하위(불리).
+    # 라벨: 점수(국면) 백분위 + 유불리 표시.
+    #   b가 높을수록 종합점수 상위(유리), 낮을수록 하위(불리). NB단계 대칭 배분.
     def _lab(b):
         lo = b * 100 // NB
         hi = (b + 1) * 100 // NB
-        tag = '유리' if b >= NB * 0.7 else ('불리' if b < NB * 0.3 else '중립')
+        # 가운데를 중립, 위/아래로 유리/불리 대칭 배분 (7단계: 불리3·중립1·유리3 → 상하 대칭)
+        _mid = (NB - 1) / 2.0
+        if b >= _mid + 0.5:
+            tag = '유리'
+        elif b <= _mid - 0.5:
+            tag = '불리'
+        else:
+            tag = '중립'
         return f'점수 {lo}~{hi}% · {tag}'
     lad = ''
     for b in range(NB - 1, -1, -1):
@@ -751,11 +796,12 @@ def section(label, a):
                      f'{pj["lo"]:,.0f} ~ {pj["hi"]:,.0f}</b> <span class="proj-p">(70% 구간)</span></span>'
                      f'<span class="proj-med" id="pjmed-{a["idx"]}">중앙 {pj["med"]:,.0f} · 상승확률 {pj["up"]:.0%}</span></div>'
                      f'{proj_svg(a, rc)}'
-                     f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면에서, '
-                     f'과거 12개월 실제 수익 분포를 현재가 {pj["px"]:,.0f}에 적용한 범위입니다. '
-                     f'<b>중립 국면이 장기 상승추세(코스피 장기 CAGR, 1995~)만큼 오르도록 보정</b>했습니다 '
-                     f'— 국면 간 격차는 그대로 두고 중립 수준만 장기추세에 맞춥니다. '
-                     f'예측이 아니라 과거 통계 분포이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
+                     f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면 기준, '
+                     f'<b>현재가 {pj["px"]:,.0f}에서 장기추세(코스피 기준점 1980=100 이후 CAGR 약 9.5%)</b>만큼 오르는 것을 '
+                     f'중심으로, 국면 프리미엄을 절반(50%)만 얹어 추정한 범위입니다. '
+                     f'과거 "유리 국면"은 대개 폭락 직후 바닥이라 그때 반등률(+40~200%)을 지금 고점에 '
+                     f'그대로 적용하면 과대추정되므로, 국면 효과를 절반만 반영해 억제했습니다. '
+                     f'예측이 아니라 과거 통계 기반 참고치이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
                      f'저성장 진입 시 과대추정될 수 있습니다.</div></div>')
     ik = a['idx']
     # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
