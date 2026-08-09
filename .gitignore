@@ -18,5 +18,5 @@ regime_state.json
 
 # 리포트 산출물(매번 재생성)
 dram_*.png
-openrouter_report.png
+or_*.png
 weekly_report_log.txt
