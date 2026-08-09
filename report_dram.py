@@ -180,7 +180,75 @@ def build():
 
     # 5 - 현물 vs 계약 월별 겹침 (과거는 추정, 최신은 실측)
     out.append(_spot_contract_monthly())
+    # 6 - 관세청 실제 수출금액/물량 (키 없으면 생략)
+    c6 = _customs_chart()
+    if c6:
+        out.append(c6)
     return out
+
+
+def _customs_chart():
+    """관세청 실측 - 메모리 수출 금액/물량/단가.
+
+    ECOS 는 지수라 '몇 배'만 알 수 있지만 여기는 실제 달러와 kg 이다.
+    금액과 물량을 같이 놓으면 상승이 단가 때문인지 물량 때문인지 갈린다.
+    """
+    path = os.path.join(HERE, 'customs_monthly.parquet')
+    if not os.path.exists(path):
+        return None
+    df = pd.read_parquet(path)
+    mem = df[df['hs'] == '854232'].copy()
+    if mem.empty:
+        return None
+    mem['dt'] = pd.to_datetime(mem['period'])
+    mem = mem.sort_values('dt').set_index('dt')
+
+    # 부제목에 '$' 를 두 번 쓰면 matplotlib 이 그 사이를 수식으로 해석해
+    # 한글이 깨진다. 여기서는 USD 로 적어 아예 피한다.
+    fig, ax = _fig('메모리 수출 실적 (관세청 실측)',
+                   'HS 854232 · 좌축 금액(억USD)/물량(톤) · 우축 단가(USD/kg)')
+    amt = mem['export_usd'] / 1e8
+    ton = mem['export_kg'] / 1000
+    ax.bar(mem.index, amt, width=22, color=ACC, alpha=.85, label='수출금액(억$)')
+    ax.plot(mem.index, ton, color=BLUE, lw=2, label='수출물량(톤)')
+    ax.set_ylabel('억 USD  /  톤', color='#9aa4b2', fontsize=8)
+
+    ax2 = ax.twinx()
+    unit = mem['export_usd'] / mem['export_kg'] / 1000
+    ax2.plot(mem.index, unit, color=UP, lw=2, ls=':', label='단가(천$/kg)')
+    ax2.set_ylabel('천 USD / kg', color=UP, fontsize=8)
+    ax2.tick_params(colors='#9aa4b2', labelsize=8.5)
+    for s in ax2.spines.values():
+        s.set_color(GRID)
+
+    r = mem.iloc[-1]
+    ax.annotate(f'${amt.iloc[-1]:,.0f}억', (mem.index[-1], amt.iloc[-1]),
+                color=ACC, fontsize=11, weight='bold', xytext=(-6, 6),
+                textcoords='offset points', ha='right')
+    ax.annotate(f'{ton.iloc[-1]:,.0f}톤', (mem.index[-1], ton.iloc[-1]),
+                color=BLUE, fontsize=10, weight='bold', xytext=(-6, -16),
+                textcoords='offset points', ha='right',
+                bbox=dict(boxstyle='round,pad=0.2', fc=BG, ec='none', alpha=.85))
+
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    lg = ax.legend(h1 + h2, l1 + l2, loc='upper left', fontsize=8,
+                   facecolor=BG, edgecolor=GRID)
+    for t in lg.get_texts():
+        t.set_color(FG)
+
+    cap = [f'⑥ 메모리 수출 실적 (관세청 실측, {r["period"]})',
+           f'   금액 ${r["export_usd"]/1e8:,.1f}억 · 물량 {r["export_kg"]/1000:,.0f}톤',
+           f'   단가 ${r["export_usd"]/r["export_kg"]:,.0f}/kg']
+    if len(mem) >= 13:
+        p = mem.iloc[-13]
+        du = (r['export_usd'] / p['export_usd'] - 1) * 100
+        dk = (r['export_kg'] / p['export_kg'] - 1) * 100
+        dp = ((r['export_usd'] / r['export_kg'])
+              / (p['export_usd'] / p['export_kg']) - 1) * 100
+        cap.append(f'   전년동월비  금액 {du:+.1f}% · 물량 {dk:+.1f}% · 단가 {dp:+.1f}%')
+        cap.append('   → 물량이 아니라 단가가 끌어올린 상승')
+    return _save(fig, 'dram_6_customs.png'), '\n'.join(cap)
 
 
 # 오늘 측정한 실측값과 짝지을 대표 품목

@@ -42,14 +42,16 @@ try:
 except ImportError:
     pass
 
-# 공공데이터포털(data.go.kr) 경유 엔드포인트.
-# 후보를 실제로 찔러 확인했다 - 이 경로만 403(키 문제)을 주고
-# 나머지는 400 NO_OPENAPI_SERVICE_ERROR 라 경로 자체가 없다.
-ENDPOINT = 'https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList'
-PARAM_KEY = 'serviceKey'  # 인증키 (일반 인증키 Decoding 값)
-PARAM_HS = 'hsSgn'        # HS부호
+# 공공데이터포털 '품목별 국가별 수출입실적'.
+# 실제 호출로 확인한 경로다. cntyCd(국가코드)는 생략 가능하며,
+# 생략하면 전체 국가 합계를 월별로 준다.
+ENDPOINT = 'https://apis.data.go.kr/1220000/Itemtrade/getItemtradeList'
+PARAM_KEY = 'serviceKey'  # 인증키 (Encoding 값이면 unquote 후 전달)
+PARAM_HS = 'hsSgn'        # HS부호(6단위)
 PARAM_FROM = 'strtYymm'   # 시작 연월
 PARAM_TO = 'endYymm'      # 종료 연월
+
+YEARS_BACK = 5   # 이 API 는 1회 조회가 1년으로 제한되어 연 단위로 반복한다
 
 HS_CODES = {
     '854232': '메모리(DRAM)',
@@ -58,12 +60,10 @@ HS_CODES = {
     '854239': '기타집적회로',
 }
 
-# 응답 태그 후보 (연계가이드 표기 흔들림에 대비해 여러 이름을 본다)
-F_PERIOD = ('year', 'yyyymm', 'basYymm', 'prid')
-F_EXP_USD = ('expDlr', 'expUsdAmt', 'expAmt')
-F_IMP_USD = ('impDlr', 'impUsdAmt', 'impAmt')
-F_EXP_WGT = ('expWgt', 'expNtwg')
-F_IMP_WGT = ('impWgt', 'impNtwg')
+# 실제 응답 필드 (호출로 확인)
+#   year=2026.01 / statKor=디램 / hsCode=8542321010
+#   expDlr expWgt impDlr impWgt balPayments
+# year='총계' 인 합계행이 섞여 오므로 반드시 걸러야 한다.
 
 
 def _safe(e):
@@ -77,12 +77,17 @@ def _safe(e):
                   f'{type(e).__name__}: {e}')
 
 
-def _pick(node, names):
-    for n in names:
-        e = node.find(n)
-        if e is not None and (e.text or '').strip():
-            return e.text.strip()
-    return None
+def _txt(node, name):
+    e = node.find(name)
+    return (e.text or '').strip() if e is not None else ''
+
+
+def _num(node, name):
+    v = _txt(node, name).replace(',', '')
+    try:
+        return float(v)
+    except ValueError:
+        return None
 
 
 def fetch(hs, start, end, key):
@@ -95,44 +100,41 @@ def fetch(hs, start, end, key):
     params = {PARAM_KEY: key, PARAM_HS: hs, PARAM_FROM: start, PARAM_TO: end}
     r = requests.get(ENDPOINT, params=params, timeout=40)
     r.raise_for_status()
-    # 포털은 오류도 200 으로 주는 경우가 있어 본문을 확인한다
+    # 포털은 오류도 200 으로 준다. 게다가 오류 위치가 두 군데다.
+    #   인증/서비스 오류 -> <errMsg>
+    #   파라미터 오류    -> <resultMsg>  (예: 조회기간 1년 초과)
+    # resultMsg 를 안 보면 0건을 '데이터 없음'으로 오해하게 된다.
     m = re.search(r'<errMsg>([^<]*)</errMsg>', r.text)
     if m:
         auth = re.search(r'<returnAuthMsg>([^<]*)</returnAuthMsg>', r.text)
         raise RuntimeError(f'{m.group(1)} / {auth.group(1) if auth else ""}')
+    rm = re.search(r'<resultMsg>([^<]*)</resultMsg>', r.text)
+    if rm and '정상' not in rm.group(1):
+        raise RuntimeError(rm.group(1))
     return r.text
 
 
 def parse(xml_text, hs, label):
+    """<item> 들을 월별 레코드로. 6단위 아래 10단위 세부품목이 여러 개 오므로
+    같은 달끼리 합산한다. year='총계' 인 합계행은 버린다(중복 계상 방지)."""
     root = ET.fromstring(xml_text)
-    rows = []
-    # 반복 노드 이름이 가이드마다 달라 자식 중 기간 필드를 가진 것을 찾는다
-    for node in root.iter():
-        if node is root:
+    acc = {}
+    for node in root.findall('.//item'):
+        period = _txt(node, 'year')          # '2026.01' 또는 '총계'
+        if not period or '.' not in period:
             continue
-        period = _pick(node, F_PERIOD)
-        if not period:
-            continue
-        def num(names):
-            v = _pick(node, names)
-            if v is None:
-                return None
-            try:
-                return float(str(v).replace(',', ''))
-            except ValueError:
-                return None
-        rec = {
-            'period': period,
-            'hs': hs,
-            'item': label,
-            'export_usd': num(F_EXP_USD),
-            'import_usd': num(F_IMP_USD),
-            'export_kg': num(F_EXP_WGT),
-            'import_kg': num(F_IMP_WGT),
-        }
-        if rec['export_usd'] is not None or rec['import_usd'] is not None:
-            rows.append(rec)
-    return rows
+        period = period.replace('.', '-')    # 2026-01
+        a = acc.setdefault(period, {
+            'period': period, 'hs': hs, 'item': label,
+            'export_usd': 0.0, 'import_usd': 0.0,
+            'export_kg': 0.0, 'import_kg': 0.0, 'subitems': 0})
+        for key, tag in (('export_usd', 'expDlr'), ('import_usd', 'impDlr'),
+                         ('export_kg', 'expWgt'), ('import_kg', 'impWgt')):
+            v = _num(node, tag)
+            if v is not None:
+                a[key] += v
+        a['subitems'] += 1
+    return sorted(acc.values(), key=lambda r: r['period'])
 
 
 def main():
@@ -144,8 +146,7 @@ def main():
         return
 
     today = datetime.date.today()
-    end = today.strftime('%Y%m')
-    start = f'{today.year - 5}{today.month:02d}'
+    start, end = f'{today.year}01', today.strftime('%Y%m')
 
     if PROBE:
         print(f'  [probe] {ENDPOINT}')
@@ -159,18 +160,26 @@ def main():
         print(txt[:2500])
         return
 
+    # 이 API 는 조회기간을 1년 이내로 제한한다. 연 단위로 쪼개 호출한다.
+    years = list(range(today.year - YEARS_BACK, today.year + 1))
     allrows = []
     for hs, label in HS_CODES.items():
-        try:
-            rows = parse(fetch(hs, start, end, key), hs, label)
-        except Exception as e:
-            print(f'  x {label:16s} 실패: {_safe(e)}')
-            continue
+        rows, failed = [], 0
+        for y in years:
+            s, e = f'{y}01', f'{y}12'
+            try:
+                rows += parse(fetch(hs, s, e, key), hs, label)
+            except Exception as ex:
+                failed += 1
+                if failed == 1:
+                    print(f'  x {label:16s} {y}년 실패: {_safe(ex)}')
         if not rows:
-            print(f'  x {label:16s} 파싱 0건 - --probe 로 응답 확인 필요')
+            print(f'  x {label:16s} 0건 - --probe 로 응답 확인 필요')
             continue
+        rows.sort(key=lambda r: r['period'])
         allrows += rows
-        print(f'  · {label:16s} {len(rows)}건  {rows[0]["period"]}~{rows[-1]["period"]}')
+        print(f'  · {label:16s} {len(rows):3d}개월  '
+              f'{rows[0]["period"]}~{rows[-1]["period"]}')
 
     if not allrows:
         print('  수집된 행이 없습니다. --probe 로 실제 응답 구조를 확인하세요.')
@@ -181,9 +190,15 @@ def main():
 
     mem = df[df['hs'] == '854232'].sort_values('period')
     if len(mem):
-        last = mem.iloc[-1]
-        print(f'  메모리 최근({last["period"]}) '
-              f'수출 ${last["export_usd"]:,.0f} / {last["export_kg"]:,.0f}kg')
+        r = mem.iloc[-1]
+        print(f'  메모리 최근 {r["period"]}  '
+              f'수출 ${r["export_usd"]/1e8:,.1f}억 / {r["export_kg"]/1000:,.0f}톤')
+        if len(mem) >= 13:
+            p12 = mem.iloc[-13]
+            print(f'    전년동월비  금액 {(r["export_usd"]/p12["export_usd"]-1)*100:+.1f}% '
+                  f'· 물량 {(r["export_kg"]/p12["export_kg"]-1)*100:+.1f}%')
+            up = (r['export_usd']/r['export_kg']) / (p12['export_usd']/p12['export_kg']) - 1
+            print(f'    kg당 단가   {r["export_usd"]/r["export_kg"]:,.0f} $/kg  ({up*100:+.1f}% YoY)')
 
 
 if __name__ == '__main__':
