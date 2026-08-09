@@ -42,11 +42,13 @@ try:
 except ImportError:
     pass
 
-ENDPOINT = ('https://unipass.customs.go.kr:38010/ext/rest/'
-            'itemtradeQry/retrieveItemtrade')
-PARAM_KEY = 'crkyCn'      # 인증키
+# 공공데이터포털(data.go.kr) 경유 엔드포인트.
+# 후보를 실제로 찔러 확인했다 - 이 경로만 403(키 문제)을 주고
+# 나머지는 400 NO_OPENAPI_SERVICE_ERROR 라 경로 자체가 없다.
+ENDPOINT = 'https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList'
+PARAM_KEY = 'serviceKey'  # 인증키 (일반 인증키 Decoding 값)
 PARAM_HS = 'hsSgn'        # HS부호
-PARAM_FROM = 'strYymm'    # 시작 연월
+PARAM_FROM = 'strtYymm'   # 시작 연월
 PARAM_TO = 'endYymm'      # 종료 연월
 
 HS_CODES = {
@@ -64,6 +66,17 @@ F_EXP_WGT = ('expWgt', 'expNtwg')
 F_IMP_WGT = ('impWgt', 'impNtwg')
 
 
+def _safe(e):
+    """예외 메시지에 인증키가 섞여 나오지 않도록 가린다.
+
+    requests 의 HTTPError 는 요청 URL 을 통째로 담기 때문에
+    그대로 로그에 쓰면 키가 평문으로 남는다.
+    """
+    import re
+    return re.sub(r'(crkyCn|serviceKey)=[^&\s]+', r'\1=<REDACTED>',
+                  f'{type(e).__name__}: {e}')
+
+
 def _pick(node, names):
     for n in names:
         e = node.find(n)
@@ -73,10 +86,20 @@ def _pick(node, names):
 
 
 def fetch(hs, start, end, key):
-    import requests
+    """data.go.kr 은 Encoding/Decoding 두 형태의 키를 준다.
+    Encoding 키를 그대로 params 에 넣으면 requests 가 한 번 더 인코딩해
+    %252F 처럼 이중 인코딩되므로, % 가 있으면 먼저 풀어서 넘긴다."""
+    import requests, urllib.parse, re
+    if '%' in key:
+        key = urllib.parse.unquote(key)
     params = {PARAM_KEY: key, PARAM_HS: hs, PARAM_FROM: start, PARAM_TO: end}
     r = requests.get(ENDPOINT, params=params, timeout=40)
     r.raise_for_status()
+    # 포털은 오류도 200 으로 주는 경우가 있어 본문을 확인한다
+    m = re.search(r'<errMsg>([^<]*)</errMsg>', r.text)
+    if m:
+        auth = re.search(r'<returnAuthMsg>([^<]*)</returnAuthMsg>', r.text)
+        raise RuntimeError(f'{m.group(1)} / {auth.group(1) if auth else ""}')
     return r.text
 
 
@@ -130,7 +153,7 @@ def main():
         try:
             txt = fetch('854232', start, end, key)
         except Exception as e:
-            print(f'  x 요청 실패: {type(e).__name__}: {e}')
+            print(f'  x 요청 실패: {_safe(e)}')
             return
         print('  ---- 응답 원문 앞부분 ----')
         print(txt[:2500])
@@ -141,7 +164,7 @@ def main():
         try:
             rows = parse(fetch(hs, start, end, key), hs, label)
         except Exception as e:
-            print(f'  x {label:16s} 실패: {type(e).__name__}: {e}')
+            print(f'  x {label:16s} 실패: {_safe(e)}')
             continue
         if not rows:
             print(f'  x {label:16s} 파싱 0건 - --probe 로 응답 확인 필요')
@@ -170,5 +193,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        print(f'  ! 실패: {type(e).__name__}: {e}')
+        print(f'  ! 실패: {_safe(e)}')
     sys.exit(0)
