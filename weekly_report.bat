@@ -18,7 +18,10 @@ REM 1) DRAM - ECOS 월간지수 + TrendForce 현물/계약 누적
 %PY% collect_dram.py >> "%LOG%" 2>&1
 %PY% report_dram.py  >> "%LOG%" 2>&1
 
-REM 2) OpenRouter - 회사별 토큰 스냅샷 누적
+REM 2) 관세청 - 실제 달러금액/중량 (CUSTOMS_KEY 없으면 조용히 건너뜀)
+%PY% collect_customs.py >> "%LOG%" 2>&1
+
+REM 3) OpenRouter - 회사별 토큰 스냅샷 누적
 %PY% collect_openrouter.py >> "%LOG%" 2>&1
 %PY% report_openrouter.py  >> "%LOG%" 2>&1
 
