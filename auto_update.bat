@@ -28,4 +28,7 @@ if errorlevel 1 (
   echo No data change - skip push. >> "%LOG%"
 )
 
+REM 3) notify by telegram only when the regime band changed
+C:\python312\python.exe notify_regime.py >> "%LOG%" 2>&1
+
 echo Run finished: %date% %time% >> "%LOG%"
