@@ -15,3 +15,8 @@ regime_state.json
 
 # 로컬 대용량 (원하면 주석 해제해서 제외)
 # *.parquet
+
+# 리포트 산출물(매번 재생성)
+dram_*.png
+openrouter_report.png
+weekly_report_log.txt
