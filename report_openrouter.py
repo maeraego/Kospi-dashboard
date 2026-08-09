@@ -168,8 +168,29 @@ def build():
     ax.annotate(f'{m_tot.iloc[-1]:,.0f}조', (m_tot.index[-1], m_tot.iloc[-1]),
                 color=FG, fontsize=13, weight='bold', xytext=(-6, 10),
                 textcoords='offset points', ha='right')
+
+    # 월별 상승률(MoM) 을 각 점 위에 작게
+    for i in range(1, len(EST_TOTAL)):
+        mom = (EST_TOTAL[i] / EST_TOTAL[i - 1] - 1) * 100
+        ax.annotate(f'{mom:+.0f}%', (ex[i], EST_TOTAL[i]), color='#8b93a1',
+                    fontsize=6.5, ha='center', xytext=(0, 7),
+                    textcoords='offset points')
+
+    # CAGR - 추정 시작점부터 실측 최신까지
+    n_mon = ((m_tot.index[-1].year - ex[0].year) * 12
+             + m_tot.index[-1].month - ex[0].month)
+    growth = m_tot.iloc[-1] / EST_TOTAL[0]
+    cagr = (growth ** (12 / n_mon) - 1) * 100 if n_mon else float('nan')
+    avg_mom = (growth ** (1 / n_mon) - 1) * 100 if n_mon else float('nan')
+    box = (f'{n_mon}개월  {EST_TOTAL[0]}조 → {m_tot.iloc[-1]:,.0f}조  ({growth:.1f}배)\n'
+           f'연율 CAGR  {cagr:+,.0f}%\n'
+           f'평균 월상승률  {avg_mom:+.1f}%')
+    ax.text(.02, .97, box, transform=ax.transAxes, color=FG, fontsize=8.5,
+            va='top', ha='left', linespacing=1.5,
+            bbox=dict(boxstyle='round,pad=0.5', fc='#161a22', ec=GRID))
+
     ax.set_ylabel('조 토큰/월', color='#9aa4b2', fontsize=8)
-    lg = ax.legend(loc='upper left', fontsize=8, facecolor=BG, edgecolor=GRID)
+    lg = ax.legend(loc='lower right', fontsize=7.5, facecolor=BG, edgecolor=GRID)
     for t in lg.get_texts():
         t.set_color(FG)
     cap = ['③ 월별 총 토큰 추이',
@@ -177,6 +198,8 @@ def build():
            f'(중국/아시아 {m_cn.iloc[-1]:,.0f}조)',
            f'   추정 {EST_MONTHS[0]} {EST_TOTAL[0]}조 -> '
            f'{EST_MONTHS[-1]} {EST_TOTAL[-1]}조',
+           f'   {n_mon}개월 {growth:.1f}배 · 연율 CAGR {cagr:+,.0f}% '
+           f'· 평균 월상승 {avg_mom:+.1f}%',
            '   ※ 추정은 뉴스 스냅샷 기반. 실측과 이어붙이면 안 됩니다']
     if len(snaps) >= 2:
         pt = df[df['snapshot'] == snaps[-2]]['tokens'].sum()

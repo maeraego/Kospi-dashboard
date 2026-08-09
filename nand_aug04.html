@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NAND Flash 가격 트래커</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#07101e;color:#e2e8f0;font-family:'Segoe UI',system-ui,sans-serif;padding:18px 16px;min-height:100vh}
+.top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}
+.badge{border-radius:5px;padding:3px 11px;font-size:11px;font-weight:700;color:#fff;letter-spacing:.8px;background:linear-gradient(90deg,#10b981,#f59e0b)}
+.dot{width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e;animation:p 1.6s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
+.live{font-size:11px;color:#22c55e;font-weight:600}
+h1{font-size:20px;font-weight:800;letter-spacing:-.3px;margin-bottom:3px}
+.sub{color:#4a6180;font-size:11px;margin-bottom:14px;line-height:1.5}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.card{background:#0d1929;border:1px solid #1a2840;border-radius:10px;padding:11px 12px}
+.cl{font-size:10px;color:#4a6180;margin-bottom:3px}
+.cv{font-size:17px;font-weight:800;line-height:1.2}
+.cs{font-size:10px;color:#334d68;margin-top:2px}
+.stabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.st{padding:5px 13px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid #1e3050;background:transparent;color:#5a7a9a;transition:all .2s}
+.st.on{background:#10b981;border-color:#10b981;color:#fff}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;padding:9px 13px;background:#0d1929;border:1px solid #1a2840;border-radius:9px;align-items:center}
+.li{display:flex;align-items:center;gap:7px;font-size:11px;color:#6a8aaa}
+.ll{width:24px;height:3px;border-radius:2px}
+.ld{width:24px;height:0;border-top:2.5px dashed}
+.ln{margin-left:auto;font-size:10px;color:#253d58}
+.cbox{background:#060e1a;border:1px solid #1a2840;border-radius:13px;padding:16px 12px 8px;margin-bottom:12px;height:370px}
+canvas{width:100%!important;height:100%!important}
+.dbox{background:#0d1929;border:1px solid #1a2840;border-radius:9px;padding:10px 13px;margin-bottom:12px}
+.dt{font-size:10px;color:#334d68;font-weight:700;letter-spacing:1px;margin-bottom:7px}
+.dgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.di .dl{font-size:10px;color:#4a6180;margin-bottom:2px}
+.di .dv{font-size:14px;font-weight:700}
+.evrow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.ep{background:#0d1929;border:1px solid #1a2840;border-radius:16px;padding:4px 10px;font-size:10px;display:flex;align-items:center;gap:5px}
+.ed{font-weight:700}.et{color:#4a6180}
+.src{margin-top:10px;font-size:9px;color:#1e3050;text-align:right;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="top"><span class="badge">NAND Flash</span><div class="dot"></div><span class="live">2026.08.04 기준 (실측: TF Jul22 / Jul20 · 계약: TF Jul31 업데이트)</span></div>
+<h1>NAND Flash 가격 트래커 — 스팟 &amp; 계약가 주봉</h1>
+<div class="sub">512Gb TLC &amp; 128Gb MLC 웨이퍼 · Apr 2025 – Aug 4, 2026 · USD/chip · TrendForce / DRAMeXchange</div>
+<div class="cards">
+  <div class="card"><div class="cl">512Gb TLC 스팟 (추정 Aug 4)</div><div class="cv" style="color:#ef4444">$18.60</div><div class="cs">Jul20 $18.93 → 완만한 하락 지속 추정</div></div>
+  <div class="card"><div class="cl">128Gb MLC 스팟 (추정)</div><div class="cv" style="color:#f59e0b">$18.10</div><div class="cs">→ 고가 수렴 · SLC강세/MLC보합 분화</div></div>
+  <div class="card"><div class="cl">Q3 '26 계약가 전망 (Jul3)</div><div class="cv" style="color:#34d399">+10~15% QoQ</div><div class="cs">TLC ~$9.66 · Q2 +70~75% 대비 대폭 둔화</div></div>
+  <div class="card"><div class="cl">Jul 31 계약 업데이트</div><div class="cv" style="color:#fbbf24">SLC↑ MLC→</div><div class="cs">SLC 강세 유지 · MLC 고가 수렴 전망</div></div>
+</div>
+<div class="stabs">
+  <button class="st on" onclick="sv('both',this)">전체 (스팟+계약)</button>
+  <button class="st" onclick="sv('spot',this)">스팟만</button>
+  <button class="st" onclick="sv('contract',this)">계약가만</button>
+  <button class="st" onclick="sv('spread',this)">스팟−계약 괴리</button>
+</div>
+<div class="legend">
+  <div class="li"><div class="ll" style="background:#10b981"></div>512Gb TLC 웨이퍼 스팟</div>
+  <div class="li"><div class="ll" style="background:#f59e0b"></div>128Gb MLC 웨이퍼 스팟</div>
+  <div class="li"><div class="ld" style="border-color:#34d399"></div>TLC 계약가 (분기 계단)</div>
+  <div class="li"><div class="ld" style="border-color:#fbbf24"></div>MLC 계약가 (분기 계단)</div>
+  <span class="ln">실선=스팟 / 점선=계약 / ★Q2 / Q3예상</span>
+</div>
+<div class="cbox"><canvas id="chart"></canvas></div>
+<div class="dbox">
+  <div class="dt">현재 시장 핵심 지표 (2026.08.04)</div>
+  <div class="dgrid">
+    <div class="di"><div class="dl">TLC 스팟 − Q2 계약가 괴리</div><div class="dv" style="color:#10b981">+$9.94 <span style="font-size:10px;color:#4a6180">스팟>계약 축소</span></div></div>
+    <div class="di"><div class="dl">Q3 '26 계약가 전망 (TF Jul3)</div><div class="dv" style="color:#fbbf24">+10~15% QoQ (Q2 +75% 대비 급둔화)</div></div>
+    <div class="di"><div class="dl">NAND 시장 분화 (Jul31)</div><div class="dv" style="color:#34d399">SLC↑강세 / MLC→고가수렴 / TLC↓약세</div></div>
+    <div class="di"><div class="dl">스팟 반등 전제 조건</div><div class="dv" style="color:#94a3b8">소비자 컨센서스 미형성 · 하락 지속</div></div>
+  </div>
+</div>
+<div class="evrow">
+  <div class="ep"><span class="ed" style="color:#64748b">H1 '25</span><span class="et">과공급 저점 ($2.50)</span></div>
+  <div class="ep"><span class="ed" style="color:#f59e0b">Sep '25</span><span class="et">삼성·SK·Kioxia 감산</span></div>
+  <div class="ep"><span class="ed" style="color:#ef4444">Nov 13</span><span class="et">+17.07% → $6.455</span></div>
+  <div class="ep"><span class="ed" style="color:#10b981">Mar 2</span><span class="et">+14.7% → $20.586</span></div>
+  <div class="ep"><span class="ed" style="color:#fbbf24">Apr 6</span><span class="et">$21.68 고점</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">May 20</span><span class="et">$20.71 반등</span></div>
+  <div class="ep"><span class="ed" style="color:#ef4444">Jun22~Jul20</span><span class="et">4주 연속 하락 -5.5%</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">Jul 3</span><span class="et">Q3 전망: NAND +10~15% QoQ</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">Jul 31</span><span class="et">NAND 계약 업데이트 · SLC↑ MLC→</span></div>
+</div>
+<div class="src">512Gb TLC · 128Gb MLC 웨이퍼 | Q2: TrendForce +70~75% | Q3: +10~15% QoQ 전망 (Jul3) | TLC 실측: Jun22=$20.069 / Jun29=$19.862 / Jul6=$19.293 / Jul20=$18.931 | 2026.08.04</div>
+<script>
+const TOTAL=70;
+function lerp(a,n){const o=[];for(let w=0;w<=n;w++){let lo=a[0],hi=a[a.length-1];for(let i=0;i<a.length-1;i++){if(a[i][0]<=w&&w<=a[i+1][0]){lo=a[i];hi=a[i+1];break;}}const t=hi[0]===lo[0]?1:(w-lo[0])/(hi[0]-lo[0]);o.push(+(lo[1]+t*(hi[1]-lo[1])).toFixed(3));}return o;}
+function step(arr,n){const o=new Array(n+1).fill(null);arr.forEach(s=>{for(let w=s.s;w<=Math.min(s.e,n);w++)o[w]=s.p;});return o;}
+function wLabel(w){const d=new Date("2025-04-04");d.setDate(d.getDate()+w*7);return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;}
+const LABELS=Array.from({length:TOTAL+1},(_,i)=>wLabel(i));
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const TICKS=new Set();let lm=-1;
+for(let i=0;i<=TOTAL;i++){const d=new Date("2025-04-04");d.setDate(d.getDate()+i*7);if(d.getMonth()!==lm){TICKS.add(i);lm=d.getMonth();}}
+function xl(i){const d=new Date("2025-04-04");d.setDate(d.getDate()+i*7);const y=d.getFullYear(),m=d.getMonth();return MON[m]+(y===2026?" '26":y===2025&&m<=4?" '25":"");}
+// TLC 전체 실측 + 추정 (W68=Jul24: $18.931(Jul20실측) W69=Jul31: ~$18.75 W70=Aug7: ~$18.60)
+const TLC=[[0,2.50],[4,2.55],[8,2.65],[12,2.80],[16,3.00],[20,3.30],[22,3.60],[24,4.20],[26,4.80],[28,6.455],[30,7.20],[32,8.80],[34,10.50],[36,13.00],[38,15.50],[40,17.80],[45,20.586],[46,21.00],[47,21.50],[48,22.00],[49,22.155],[50,21.68],[51,21.000],[52,20.70],[53,20.55],[54,20.472],[55,20.40],[56,20.35],[57,20.38],[58,20.541],[59,20.707],[60,20.638],[61,20.683],[62,20.638],[63,20.660],[64,20.069],[65,19.862],[66,19.293],[67,19.10],[68,18.931],[69,18.75],[70,18.60]];
+const MLC=[[0,1.80],[4,1.85],[8,1.90],[12,2.00],[16,2.20],[20,2.60],[24,3.20],[28,4.60],[30,5.50],[34,7.50],[36,10.00],[38,12.50],[40,15.00],[43,17.50],[45,19.50],[46,20.80],[49,21.50],[50,20.90],[51,20.20],[52,19.90],[54,18.80],[56,18.60],[58,18.75],[59,19.00],[60,18.90],[61,18.95],[62,18.90],[63,18.80],[64,18.65],[65,18.55],[66,18.50],[67,18.35],[68,18.30],[69,18.15],[70,18.10]];
+// Q2 계약 확정 + Q3 예상 (+10~15% QoQ 중간값 ~12.5%)
+const TLCC=[{s:0,e:12,p:3.20},{s:13,e:25,p:3.10},{s:26,e:38,p:3.40},{s:39,e:51,p:3.74},{s:52,e:55,p:5.05},{s:56,e:68,p:8.59},{s:69,e:70,p:9.66}];
+const MLCC=[{s:0,e:12,p:2.20},{s:13,e:25,p:2.10},{s:26,e:38,p:2.35},{s:39,e:51,p:2.70},{s:52,e:55,p:3.78},{s:56,e:68,p:6.50},{s:69,e:70,p:7.31}];
+const ts=lerp(TLC,TOTAL),ms=lerp(MLC,TOTAL),tc=step(TLCC,TOTAL),mc=step(MLCC,TOTAL);
+const tsp=ts.map((v,i)=>tc[i]!=null?+(v-tc[i]).toFixed(3):null);
+const msp=ms.map((v,i)=>mc[i]!=null?+(v-mc[i]).toFixed(3):null);
+const QS=[{w:13,l:"Q2 '25"},{w:26,l:"Q3 '25"},{w:39,l:"Q4 '25"},{w:52,l:"Q1 '26"},{w:56,l:"Q2 '26★"},{w:69,l:"Q3 '26↑"}];
+const EVT={20:'감산발표',28:'TLC+17%',45:'$20.59',49:'$22.16고점',50:'$21.68',51:'$21.00',58:'반등',64:'$20.07',66:'$19.29',68:'$18.93',70:'오늘'};
+const OVL={id:'ovl',afterDraw(c){
+  const {ctx:x,scales:{x:sx,y:sy}}=c;
+  QS.forEach(q=>{if(q.w>TOTAL)return;const xp=sx.getPixelForValue(q.w);
+    const star=q.l.includes('★'),q3=q.l.includes('↑');
+    x.save();x.beginPath();x.setLineDash(q3?[3,4]:star?[4,3]:[6,4]);
+    x.strokeStyle=q3?'#2d4a1e':star?'#1e4a3e':'#152235';x.lineWidth=star||q3?1.8:1.3;
+    x.moveTo(xp,sy.top);x.lineTo(xp,sy.bottom);x.stroke();x.setLineDash([]);
+    const tw=x.measureText(q.l).width+8;x.fillStyle=q3?'#1a3010':star?'#0e2a22':'#101e30';x.fillRect(xp-tw/2,sy.top+1,tw,14);
+    x.fillStyle=q3?'#86efac':star?'#22c55e':'#2e7060';x.font='bold 8.5px Segoe UI';x.textAlign='center';x.fillText(q.l,xp,sy.top+12);x.restore();});
+  Object.entries(EVT).forEach(([w,lbl])=>{const wi=+w;if(wi>TOTAL)return;const xp=sx.getPixelForValue(wi);
+    const today=wi===70,red=wi>=64&&wi<=68;
+    x.save();x.beginPath();x.setLineDash([3,3]);x.strokeStyle=today?'#22c55e':red?'#ef4444':'#182d45';x.lineWidth=today||red?1.8:1;x.moveTo(xp,sy.top+16);x.lineTo(xp,sy.bottom);x.stroke();x.setLineDash([]);
+    x.fillStyle=today?'#22c55e':red?'#ef4444':'#2e5070';x.font=`${today||red?'bold ':''}8.5px Segoe UI`;x.textAlign='center';x.fillText(lbl,xp,sy.top+(wi%3===0?24:wi%3===1?33:42));x.restore();});}};
+const ctx=document.getElementById('chart').getContext('2d');
+function G(r,g,b,a){const gr=ctx.createLinearGradient(0,0,0,370);gr.addColorStop(0,`rgba(${r},${g},${b},${a})`);gr.addColorStop(1,`rgba(${r},${g},${b},0)`);return gr;}
+const gt=G(16,185,129,.30),gm=G(245,158,11,.24),gtc=G(52,211,153,.22),gmc=G(251,191,36,.16);
+function DS(mode){const mk=(lbl,data,c,bg,dash,stp)=>({label:lbl,data,borderColor:c,backgroundColor:bg||'transparent',borderWidth:2.4,borderDash:dash?[7,4]:[],pointRadius:0,pointHoverRadius:6,pointHoverBackgroundColor:c,pointHoverBorderColor:'#fff',pointHoverBorderWidth:1.5,fill:!!bg,tension:stp?0:.35,stepped:stp?'before':false});
+  if(mode==='both')return[mk('512Gb TLC 스팟',ts,'#10b981',gt),mk('128Gb MLC 스팟',ms,'#f59e0b',gm),mk('TLC 계약가',tc,'#34d399',null,true,true),mk('MLC 계약가',mc,'#fbbf24',null,true,true)];
+  if(mode==='spot')return[mk('512Gb TLC 스팟',ts,'#10b981',gt),mk('128Gb MLC 스팟',ms,'#f59e0b',gm)];
+  if(mode==='contract')return[mk('TLC 계약가',tc,'#34d399',gtc,true,true),mk('MLC 계약가',mc,'#fbbf24',gmc,true,true)];
+  return[mk('TLC 괴리',tsp,'#10b981',gt),mk('MLC 괴리',msp,'#f59e0b',gm)];}
+function opts(mode){return{responsive:true,maintainAspectRatio:false,animation:{duration:450},interaction:{mode:'index',intersect:false},
+  plugins:{legend:{display:false},tooltip:{backgroundColor:'#0a1628',borderColor:'#1e3a5f',borderWidth:1,titleColor:'#6b8aaa',bodyColor:'#dde6f0',padding:11,callbacks:{title:its=>LABELS[its[0].dataIndex],label:c=>{if(c.parsed.y===null)return null;return mode==='spread'?` ${c.dataset.label}: ${c.parsed.y>=0?'+':''}$${c.parsed.y.toFixed(2)}`:` ${c.dataset.label}: $${c.parsed.y.toFixed(2)}`;}}}},
+  scales:{x:{grid:{color:'#0d1e33',drawTicks:false},border:{color:'#152235'},ticks:{color:'#4a6180',font:{size:9.5},maxRotation:0,autoSkip:false,callback:(_,i)=>TICKS.has(i)?xl(i):''}},y:{grid:{color:'#0d1e33',drawTicks:false},border:{color:'transparent'},ticks:{color:'#4a6180',font:{size:10},callback:v=>`$${v}`},min:mode==='spread'?-1:0}}};}
+let CH=new Chart(ctx,{type:'line',data:{labels:LABELS,datasets:DS('both')},options:opts('both'),plugins:[OVL]});
+function sv(mode,btn){document.querySelectorAll('.st').forEach(b=>b.classList.remove('on'));btn.classList.add('on');CH.data.datasets=DS(mode);CH.options=opts(mode);CH.update();}
+</script>
+</body>
+</html>

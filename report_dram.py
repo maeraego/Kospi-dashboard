@@ -177,7 +177,81 @@ def build():
                 ha='center', transform=ax.transAxes)
     out.append((_save(fig, 'dram_4_spot.png'),
                 '④ TrendForce 현물가 / 계약가\n' + '\n'.join(cap)))
+
+    # 5 - 현물 vs 계약 월별 겹침 (과거는 추정, 최신은 실측)
+    out.append(_spot_contract_monthly())
     return out
+
+
+# 오늘 측정한 실측값과 짝지을 대표 품목
+#   현물 스크랩 이름 -> (계약 스크랩 이름, 과거추정 시리즈 이름)
+PAIRS = {
+    'DDR4 16Gb (2Gx8) 3200': ('DDR4 16Gb 2Gx8', 'DDR4 16Gb'),
+    'DDR5 16Gb (2Gx8) 4800/5600': (None, 'DDR5 16Gb'),
+}
+PAIR_COLOR = {'DDR4 16Gb': '#f97316', 'DDR5 16Gb': '#60a5fa'}
+
+
+def _spot_contract_monthly():
+    """대표 DRAM 2종의 현물 vs 계약을 월별로 겹쳐 그린다.
+
+    과거 구간은 dram_history 의 추정치(실선/점선 흐리게),
+    오늘 값은 collect_dram 이 받은 실측(굵은 점).
+    둘을 한 선으로 잇지 않는다 - 출처가 달라 이으면 없는 급등이 생긴다.
+    """
+    import dram_history as dh
+    spot_h, con_h = dh.monthly()
+
+    fig, ax = _fig('DRAM 현물가 vs 계약가 (월별)',
+                   '실선=현물 · 점선=계약 · 흐린 구간은 추정, 굵은 점이 실측')
+    for name in ('DDR4 16Gb', 'DDR5 16Gb'):
+        c = PAIR_COLOR[name]
+        ax.plot(spot_h.index, spot_h[name], color=c, lw=2, alpha=.85,
+                label=f'{name} 현물(추정)')
+        ax.plot(con_h.index, con_h[name], color=c, lw=1.8, ls='--', alpha=.55,
+                drawstyle='steps-post', label=f'{name} 계약(추정)')
+        ax.annotate(f'${spot_h[name].iloc[-1]:,.0f}',
+                    (spot_h.index[-1], spot_h[name].iloc[-1]), color=c,
+                    fontsize=9, weight='bold', xytext=(4, 2),
+                    textcoords='offset points')
+
+    # 실측 점 얹기
+    meas = []
+    srow = (pd.read_parquet(SPOT).iloc[-1].dropna()
+            if os.path.exists(SPOT) else pd.Series(dtype=float))
+    crow = (pd.read_parquet(CONTRACT).iloc[-1].dropna()
+            if os.path.exists(CONTRACT) else pd.Series(dtype=float))
+    asof = (pd.read_parquet(SPOT).index[-1] if os.path.exists(SPOT)
+            else pd.Timestamp.today())
+    for sname, (cname, hname) in PAIRS.items():
+        c = PAIR_COLOR[hname]
+        if sname in srow.index:
+            v = float(srow[sname])
+            ax.scatter([asof], [v], color=c, s=90, zorder=6,
+                       edgecolors='#0f1115', linewidths=1.5)
+            ax.annotate(f'${v:,.2f}', (asof, v), color=c, fontsize=10,
+                        weight='bold', xytext=(6, 6), textcoords='offset points')
+            meas.append(f'   {hname} 현물(실측) ${v:,.2f}')
+        if cname and cname in crow.index:
+            v = float(crow[cname])
+            ax.scatter([asof], [v], color=c, s=70, zorder=6, marker='s',
+                       edgecolors='#0f1115', linewidths=1.5)
+            meas.append(f'   {hname} 계약(실측) ${v:,.2f}')
+
+    ax.set_ylabel('USD / chip', color='#9aa4b2', fontsize=8)
+    lg = ax.legend(loc='upper left', fontsize=7.5, facecolor=BG, edgecolor=GRID)
+    for t in lg.get_texts():
+        t.set_color(FG)
+
+    d4s, d4c = spot_h['DDR4 16Gb'].iloc[-1], con_h['DDR4 16Gb'].iloc[-1]
+    cap = ['⑤ 현물 vs 계약 (월별, 대표 DRAM 2종)',
+           f'   DDR4 16Gb 추정  현물 ${d4s:,.1f} / 계약 ${d4c:,.1f} '
+           f'(괴리 {d4s-d4c:+,.1f})',
+           f'   DDR5 16Gb 추정  현물 ${spot_h["DDR5 16Gb"].iloc[-1]:,.1f} / '
+           f'계약 ${con_h["DDR5 16Gb"].iloc[-1]:,.1f}']
+    cap += meas
+    cap.append('   ※ 과거는 뉴스·TF 스냅샷 보간 추정. 실측 점과 이으면 안 됩니다')
+    return _save(fig, 'dram_5_spot_contract.png'), '\n'.join(cap)
 
 
 def send(items):

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DRAM 가격 트래커</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#07101e;color:#e2e8f0;font-family:'Segoe UI',system-ui,sans-serif;padding:18px 16px;min-height:100vh}
+.top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}
+.badge{border-radius:5px;padding:3px 11px;font-size:11px;font-weight:700;color:#fff;letter-spacing:.8px;background:linear-gradient(90deg,#3b82f6,#8b5cf6)}
+.dot{width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e;animation:p 1.6s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
+.live{font-size:11px;color:#22c55e;font-weight:600}
+h1{font-size:20px;font-weight:800;letter-spacing:-.3px;margin-bottom:3px}
+.sub{color:#4a6180;font-size:11px;margin-bottom:14px;line-height:1.5}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.card{background:#0d1929;border:1px solid #1a2840;border-radius:10px;padding:11px 12px}
+.cl{font-size:10px;color:#4a6180;margin-bottom:3px}
+.cv{font-size:17px;font-weight:800;line-height:1.2}
+.cs{font-size:10px;color:#334d68;margin-top:2px}
+.stabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.st{padding:5px 13px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid #1e3050;background:transparent;color:#5a7a9a;transition:all .2s}
+.st.on{background:#3b82f6;border-color:#3b82f6;color:#fff}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;padding:9px 13px;background:#0d1929;border:1px solid #1a2840;border-radius:9px;align-items:center}
+.li{display:flex;align-items:center;gap:7px;font-size:11px;color:#6a8aaa}
+.ll{width:24px;height:3px;border-radius:2px}
+.ld{width:24px;height:0;border-top:2.5px dashed}
+.ln{margin-left:auto;font-size:10px;color:#253d58}
+.cbox{background:#060e1a;border:1px solid #1a2840;border-radius:13px;padding:16px 12px 8px;margin-bottom:12px;height:370px}
+canvas{width:100%!important;height:100%!important}
+.dbox{background:#0d1929;border:1px solid #1a2840;border-radius:9px;padding:10px 13px;margin-bottom:12px}
+.dt{font-size:10px;color:#334d68;font-weight:700;letter-spacing:1px;margin-bottom:7px}
+.dgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.di .dl{font-size:10px;color:#4a6180;margin-bottom:2px}
+.di .dv{font-size:14px;font-weight:700}
+.evrow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.ep{background:#0d1929;border:1px solid #1a2840;border-radius:16px;padding:4px 10px;font-size:10px;display:flex;align-items:center;gap:5px}
+.ed{font-weight:700}.et{color:#4a6180}
+.src{margin-top:10px;font-size:9px;color:#1e3050;text-align:right;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="top"><span class="badge">DRAM</span><div class="dot"></div><span class="live">2026.08.04 기준 (실측: TF Jul22 · Q3전망: TF Jul3)</span></div>
+<h1>DRAM 가격 트래커 — 스팟 &amp; 계약가 주봉</h1>
+<div class="sub">DDR4 16Gb &amp; DDR5 16Gb eTT · Apr 2025 – Aug 4, 2026 · USD/chip · TrendForce / DRAMeXchange</div>
+<div class="cards">
+  <div class="card"><div class="cl">DDR4 스팟 (추정 Aug 4)</div><div class="cv" style="color:#f97316">$60.80</div><div class="cs">Jul21 $41.1(1Gx8) → 완만 상승 지속 추정</div></div>
+  <div class="card"><div class="cl">DDR5 스팟 (추정)</div><div class="cv" style="color:#60a5fa">$25.00</div><div class="cs">▲ 서버·엔터 수요 지지</div></div>
+  <div class="card"><div class="cl">Q3 '26 계약가 전망 (Jul3)</div><div class="cv" style="color:#22c55e">DDR4 ~$27.00</div><div class="cs">+13~18% QoQ · DDR5 ~$24.38</div></div>
+  <div class="card"><div class="cl">Q3 인상폭 둔화 이유</div><div class="cv" style="color:#f59e0b">소비자 한계</div><div class="cs">PC·스마트폰 구매력 한계 도달</div></div>
+</div>
+<div class="stabs">
+  <button class="st on" onclick="sv('both',this)">전체 (스팟+계약)</button>
+  <button class="st" onclick="sv('spot',this)">스팟만</button>
+  <button class="st" onclick="sv('contract',this)">계약가만</button>
+  <button class="st" onclick="sv('spread',this)">스팟−계약 괴리</button>
+</div>
+<div class="legend">
+  <div class="li"><div class="ll" style="background:#f97316"></div>DDR4 16Gb 스팟</div>
+  <div class="li"><div class="ll" style="background:#60a5fa"></div>DDR5 16Gb 스팟</div>
+  <div class="li"><div class="ld" style="border-color:#fb923c"></div>DDR4 계약가 (분기 계단)</div>
+  <div class="li"><div class="ld" style="border-color:#93c5fd"></div>DDR5 계약가 (분기 계단)</div>
+  <span class="ln">실선=스팟 / 점선=계약 / ★Q2확정 / Q3예상점선</span>
+</div>
+<div class="cbox"><canvas id="chart"></canvas></div>
+<div class="dbox">
+  <div class="dt">현재 시장 핵심 지표 (2026.08.04)</div>
+  <div class="dgrid">
+    <div class="di"><div class="dl">DDR4 스팟 − Q3 계약가 괴리 (전망)</div><div class="dv" style="color:#f97316">+$33.80 <span style="font-size:10px;color:#4a6180">스팟>>계약 지속</span></div></div>
+    <div class="di"><div class="dl">DDR5 스팟 − Q3 계약가 (전망)</div><div class="dv" style="color:#22c55e">+$0.62 <span style="font-size:10px;color:#4a6180">거의 수렴</span></div></div>
+    <div class="di"><div class="dl">Q3 '26 계약 인상폭 (TF Jul3)</div><div class="dv" style="color:#f59e0b">+13~18% QoQ (Q2 +30% 대비 둔화)</div></div>
+    <div class="di"><div class="dl">AI서버 수요 (TF Jul3)</div><div class="dv" style="color:#22c55e">Q3도 지지 · 단 모멘텀 완화</div></div>
+  </div>
+</div>
+<div class="evrow">
+  <div class="ep"><span class="ed" style="color:#f59e0b">Mar '25</span><span class="et">CXMT DDR4→DDR5 전환</span></div>
+  <div class="ep"><span class="ed" style="color:#fb923c">Feb '26</span><span class="et">DDR4 $78 사상 최고가</span></div>
+  <div class="ep"><span class="ed" style="color:#60a5fa">May 5</span><span class="et">DDR4 1Gx8 $32.40 저점</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">Jun 30</span><span class="et">DRAM 월간 계약 업데이트</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">Jul 3</span><span class="et">Q3 전망: DRAM +13~18% QoQ</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">Jul 21</span><span class="et">1Gx8 $41.10 (+3.27%) 엔터SSD</span></div>
+  <div class="ep"><span class="ed" style="color:#22c55e">Jul 31</span><span class="et">DRAM 계약가 7월 업데이트</span></div>
+</div>
+<div class="src">DDR4·DDR5 16Gb eTT | Q2: 삼성 +30% (Apr30) | Q3: TrendForce Jul3 +13~18% 전망 반영 | 1Gx8 실측: May5=$32.40 / Jul7=$37.14 / Jul15=$39.80 / Jul21=$41.10 | 2026.08.04</div>
+<script>
+const TOTAL=70;
+function lerp(a,n){const o=[];for(let w=0;w<=n;w++){let lo=a[0],hi=a[a.length-1];for(let i=0;i<a.length-1;i++){if(a[i][0]<=w&&w<=a[i+1][0]){lo=a[i];hi=a[i+1];break;}}const t=hi[0]===lo[0]?1:(w-lo[0])/(hi[0]-lo[0]);o.push(+(lo[1]+t*(hi[1]-lo[1])).toFixed(2));}return o;}
+function step(arr,n){const o=new Array(n+1).fill(null);arr.forEach(s=>{for(let w=s.s;w<=Math.min(s.e,n);w++)o[w]=s.p;});return o;}
+function wLabel(w){const d=new Date("2025-04-04");d.setDate(d.getDate()+w*7);return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;}
+const LABELS=Array.from({length:TOTAL+1},(_,i)=>wLabel(i));
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const TICKS=new Set();let lm=-1;
+for(let i=0;i<=TOTAL;i++){const d=new Date("2025-04-04");d.setDate(d.getDate()+i*7);if(d.getMonth()!==lm){TICKS.add(i);lm=d.getMonth();}}
+function xl(i){const d=new Date("2025-04-04");d.setDate(d.getDate()+i*7);const y=d.getFullYear(),m=d.getMonth();return MON[m]+(y===2026?" '26":y===2025&&m<=4?" '25":"");}
+// DDR4 eTT: 1Gx8×1.414 환산 / W68=Jul24: $58.10(Jul21실측) W69=Jul31: ~$59.40 W70=Aug7: ~$60.80
+const D4=[[0,3.80],[4,4.20],[7,5.50],[9,8.00],[12,13.50],[16,15.91],[20,22.00],[24,32.00],[28,44.00],[32,54.00],[36,62.00],[38,65.00],[41,72.00],[45,78.00],[47,72.00],[49,63.00],[51,57.00],[52,54.00],[53,51.00],[54,48.00],[55,46.00],[56,44.50],[57,42.50],[58,43.20],[59,41.50],[60,43.00],[61,47.00],[62,48.50],[63,50.00],[64,50.50],[65,51.00],[66,52.50],[67,56.30],[68,58.10],[69,59.40],[70,60.80]];
+const D5=[[0,5.00],[4,5.30],[8,5.80],[12,6.20],[16,6.84],[20,7.80],[24,9.50],[28,13.00],[30,14.00],[34,20.50],[36,24.00],[38,27.20],[41,25.00],[44,22.00],[47,21.00],[50,20.50],[52,20.20],[53,19.80],[54,19.50],[55,19.20],[56,19.00],[57,19.00],[58,19.30],[59,19.80],[60,19.60],[61,20.50],[62,21.20],[63,22.20],[64,23.00],[65,23.20],[66,23.40],[67,23.80],[68,24.20],[69,24.60],[70,25.00]];
+// Q2 계약 확정 + Q3 계약 전망 (+13~18% QoQ 중간값 ~15.5%)
+const D4C=[{s:0,e:12,p:4.00},{s:13,e:25,p:4.80},{s:26,e:38,p:5.50},{s:39,e:51,p:9.00},{s:52,e:55,p:18.00},{s:56,e:68,p:23.40},{s:69,e:70,p:27.00}];
+const D5C=[{s:0,e:12,p:5.50},{s:13,e:25,p:6.10},{s:26,e:38,p:7.00},{s:39,e:51,p:10.15},{s:52,e:55,p:16.24},{s:56,e:68,p:21.11},{s:69,e:70,p:24.38}];
+const d4s=lerp(D4,TOTAL),d5s=lerp(D5,TOTAL),d4c=step(D4C,TOTAL),d5c=step(D5C,TOTAL);
+const d4sp=d4s.map((v,i)=>d4c[i]!=null?+(v-d4c[i]).toFixed(2):null);
+const d5sp=d5s.map((v,i)=>d5c[i]!=null?+(v-d5c[i]).toFixed(2):null);
+const QS=[{w:13,l:"Q2 '25"},{w:26,l:"Q3 '25"},{w:39,l:"Q4 '25"},{w:52,l:"Q1 '26"},{w:56,l:"Q2 '26★"},{w:69,l:"Q3 '26↑"}];
+const EVT={7:'CXMT',12:'DDR4급등',24:'EOL',38:'DDR5$27.2',45:'$78',57:'저점',67:'$39.8',68:'$41.1',70:'오늘'};
+const OVL={id:'ovl',afterDraw(c){
+  const {ctx:x,scales:{x:sx,y:sy}}=c;
+  QS.forEach(q=>{if(q.w>TOTAL)return;const xp=sx.getPixelForValue(q.w);
+    const star=q.l.includes('★'),q3=q.l.includes('↑');
+    x.save();x.beginPath();x.setLineDash(q3?[3,4]:star?[4,3]:[6,4]);
+    x.strokeStyle=q3?'#2d4a1e':star?'#1e4a6e':'#152235';x.lineWidth=star||q3?1.8:1.3;
+    x.moveTo(xp,sy.top);x.lineTo(xp,sy.bottom);x.stroke();x.setLineDash([]);
+    const tw=x.measureText(q.l).width+8;x.fillStyle=q3?'#1a3010':star?'#0e2a40':'#101e30';x.fillRect(xp-tw/2,sy.top+1,tw,14);
+    x.fillStyle=q3?'#86efac':star?'#22c55e':'#3a6090';x.font='bold 8.5px Segoe UI';x.textAlign='center';x.fillText(q.l,xp,sy.top+12);x.restore();});
+  Object.entries(EVT).forEach(([w,lbl])=>{const wi=+w;if(wi>TOTAL)return;const xp=sx.getPixelForValue(wi),today=wi===70;
+    x.save();x.beginPath();x.setLineDash([3,3]);x.strokeStyle=today?'#22c55e':'#182d45';x.lineWidth=today?2:1;x.moveTo(xp,sy.top+16);x.lineTo(xp,sy.bottom);x.stroke();x.setLineDash([]);
+    x.fillStyle=today?'#22c55e':'#2e5070';x.font=`${today?'bold ':''}8.5px Segoe UI`;x.textAlign='center';x.fillText(lbl,xp,sy.top+(wi%3===0?24:wi%3===1?33:42));x.restore();});}};
+const ctx=document.getElementById('chart').getContext('2d');
+function G(r,g,b,a){const gr=ctx.createLinearGradient(0,0,0,370);gr.addColorStop(0,`rgba(${r},${g},${b},${a})`);gr.addColorStop(1,`rgba(${r},${g},${b},0)`);return gr;}
+const gd4=G(249,115,22,.32),gd5=G(96,165,250,.22),gd4c=G(251,146,60,.22),gd5c=G(147,197,253,.15);
+function DS(mode){const mk=(lbl,data,c,bg,dash,stp)=>({label:lbl,data,borderColor:c,backgroundColor:bg||'transparent',borderWidth:2.4,borderDash:dash?[7,4]:[],pointRadius:0,pointHoverRadius:6,pointHoverBackgroundColor:c,pointHoverBorderColor:'#fff',pointHoverBorderWidth:1.5,fill:!!bg,tension:stp?0:.35,stepped:stp?'before':false});
+  if(mode==='both')return[mk('DDR4 스팟',d4s,'#f97316',gd4),mk('DDR5 스팟',d5s,'#60a5fa',gd5),mk('DDR4 계약가',d4c,'#fb923c',null,true,true),mk('DDR5 계약가',d5c,'#93c5fd',null,true,true)];
+  if(mode==='spot')return[mk('DDR4 스팟',d4s,'#f97316',gd4),mk('DDR5 스팟',d5s,'#60a5fa',gd5)];
+  if(mode==='contract')return[mk('DDR4 계약가',d4c,'#fb923c',gd4c,true,true),mk('DDR5 계약가',d5c,'#93c5fd',gd5c,true,true)];
+  return[mk('DDR4 괴리',d4sp,'#f97316',gd4),mk('DDR5 괴리',d5sp,'#60a5fa',gd5)];}
+function opts(mode){return{responsive:true,maintainAspectRatio:false,animation:{duration:450},interaction:{mode:'index',intersect:false},
+  plugins:{legend:{display:false},tooltip:{backgroundColor:'#0a1628',borderColor:'#1e3a5f',borderWidth:1,titleColor:'#6b8aaa',bodyColor:'#dde6f0',padding:11,callbacks:{title:its=>LABELS[its[0].dataIndex],label:c=>{if(c.parsed.y===null)return null;return mode==='spread'?` ${c.dataset.label}: ${c.parsed.y>=0?'+':''}$${c.parsed.y.toFixed(2)}`:` ${c.dataset.label}: $${c.parsed.y.toFixed(2)}`;}}}},
+  scales:{x:{grid:{color:'#0d1e33',drawTicks:false},border:{color:'#152235'},ticks:{color:'#4a6180',font:{size:9.5},maxRotation:0,autoSkip:false,callback:(_,i)=>TICKS.has(i)?xl(i):''}},y:{grid:{color:'#0d1e33',drawTicks:false},border:{color:'transparent'},ticks:{color:'#4a6180',font:{size:10},callback:v=>`$${v}`},min:mode==='spread'?-10:0}}};}
+let CH=new Chart(ctx,{type:'line',data:{labels:LABELS,datasets:DS('both')},options:opts('both'),plugins:[OVL]});
+function sv(mode,btn){document.querySelectorAll('.st').forEach(b=>b.classList.remove('on'));btn.classList.add('on');CH.data.datasets=DS(mode);CH.options=opts(mode);CH.update();}
+</script>
+</body>
+</html>
