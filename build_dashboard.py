@@ -200,6 +200,52 @@ def signals_for(idx):
         sig.insert(3, ('선행 PBR', _fwd_pbr, -1, FMT_X, ('고평가', '저평가')))
     return sig
 
+def _downside_sd(r, mu=None, ddof=1):
+    """하방 반편차 - 평균 아래로 벗어난 값만으로 계산한 표준편차.
+    켈리 분모로는 쓰지 않는다(아래 _kelly_empirical 주석 참조). 표시용."""
+    r = np.asarray(r, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) <= ddof:
+        return 0.0
+    m = float(r.mean()) if mu is None else float(mu)
+    dn = r[r < m]
+    if len(dn) == 0:
+        return 0.0
+    return float(np.sqrt(((dn - m) ** 2).sum() / (len(r) - ddof)))
+
+
+def _kelly_empirical(r, rf=0.0, lo=-0.5, hi=1.5, n=201):
+    """경험분포 켈리 - 과거 수익을 그대로 써서 E[log(1+f(r−rf))] 를 최대화.
+
+    왜 σ² 공식을 안 쓰는가:
+      f* = (μ−rf)/σ² 는 로그효용의 2차 근사라 정규분포를 사실상 전제한다.
+      12개월 수익은 합산 효과로 정규에 가까워지지만 완전하지는 않다
+      (중첩 기준 초과첨도 +1.9~3.0, |z|>3 이 정규의 7배).
+
+    하방 반편차(σ_하방²)로 바꿔보는 것도 시도했으나 표본외에서 실패했다.
+      분모가 제곱이라 레버리지가 4배로 뛰어, 코스피 무제한 켈리에서
+      12개 코호트 중 10개가 파산하고 MDD −99% 가 나왔다.
+      이론 방향은 맞아도 추정치가 불안정하면 쓸 수 없다.
+
+    경험분포 방식은 분포 가정이 아예 없고, 파산 구간에서 log 가 −∞ 로
+    발산하므로 과베팅을 스스로 막는다. 표본외에서 코스피·코스닥 모두
+    파산 0, MDD 도 가장 낮았다. (수치는 check_tails.py / kelly_backtest)
+    """
+    r = np.asarray(r, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) < 5:
+        return 0.0
+    best, bf = -np.inf, 0.0
+    for f in np.linspace(lo, hi, n):
+        w = 1.0 + f * (r - rf)
+        if (w <= 1e-9).any():          # 파산 구간은 후보에서 제외
+            continue
+        v = float(np.mean(np.log(w)))
+        if v > best:
+            best, bf = v, f
+    return bf
+
+
 def regime(p):
     if p < .20: return '매우 불리', '#e5484d'
     if p < .40: return '불리', '#e08c3b'
@@ -616,19 +662,19 @@ def analyze(idx):
             else:                              # 이긴 적이 없음 → 최소 베팅
                 b_ratio = 0.0; f_ = KMIN
             fc = max(KMIN, min(KMAX, f_))
-            # ── (2) 연속형 켈리:  f* = (μ − rf) / σ²  ──
-            #   수익률을 이산 승/패가 아니라 연속 분포로 보고, 초과수익을 분산으로 나눈다.
-            #   단순 켈리가 '이겼나 졌나'만 보는 반면 이쪽은 '얼마나 흔들렸나'를 반영한다.
+            # ── (2) 연속형 켈리: 경험분포로 기대로그성장 최대화 ──
+            #   수익률을 이산 승/패가 아니라 연속 분포로 보고 최적 비중을 찾는다.
+            #   단순 켈리가 '이겼나 졌나'만 보는 반면 이쪽은 분포 전체를 쓴다.
+            #   σ² 공식이 아니라 경험분포를 쓰는 이유는 _kelly_empirical 주석 참조.
             mu = float(g.mean()); sd = float(g.std(ddof=1)) if len(g) > 1 else 0.0
+            sd_dn = _downside_sd(g.values, mu)
             rf_ = float(rf_bucket) if rf_bucket == rf_bucket else 0.0
-            if sd > 1e-9:
-                f_c = (mu - rf_) / (sd ** 2)
-            else:
-                f_c = KMAX if mu > rf_ else KMIN
+            f_c = _kelly_empirical(g.values, rf_, KMIN, KMAX)
             fcc = max(KMIN, min(KMAX, f_c))
             betrows.append(dict(nm=names[b_], p=p_, q=q_, aw=aw, al=al, b=b_ratio,
                                 f=f_, fc=fc, n=int(len(g)),
-                                mu=mu, sd=sd, var=sd ** 2, rf=rf_, fcont=f_c, fcontc=fcc))
+                                mu=mu, sd=sd, sd_dn=sd_dn, var=sd_dn ** 2,
+                                rf=rf_, fcont=f_c, fcontc=fcc))
         # 순서 뒤집힘 보정: 점수가 높을수록 f*가 커지도록 단조 제약
         _valid = [r for r in betrows if r['n'] > 0]
         if len(_valid) >= 2:
@@ -903,8 +949,8 @@ def kelly_backtest(idx='KOSPI', start='2010-12-31', H=12):
         g = past[np.digitize(past['s'], edges) == b]
         f = 0.0
         if len(g) >= 8:
-            exc = g['r'] - g['rf']
-            if exc.std() > 0: f = float(exc.mean() / exc.std() ** 2)
+            # 화면 계산과 동일하게 경험분포 켈리 (근거: _kelly_empirical 주석)
+            f = _kelly_empirical((g['r'] - g['rf']).values)
         rows.append(dict(date=t, f=f, pct=pct, r=rH.get(t, np.nan), rf=rfH.get(t, np.nan)))
     B = pd.DataFrame(rows).set_index('date').dropna(subset=['r'])
     if len(B) < 24: return None
@@ -1056,9 +1102,11 @@ def kelly_section(AK, AQ):
                    f'평균이익 {cr["aw"]*100:+.1f}% · 평균손실 {cr["al"]*100:.1f}% · 손익비 b {bb}<br>'
                    f'&nbsp;&nbsp;f* = p − q/b = <b>{cr["f"]*100:+.0f}%</b>'
                    f'{" → 보정 " + format(cr["fc"]*100, "+.0f") + "%" if abs(cr["f"]-cr["fc"])>1e-9 else ""}<br>'
-                   f'<b>② 연속형 켈리</b>  μ {cr["mu"]*100:+.1f}% · σ {cr["sd"]*100:.1f}% · '
-                   f'σ² {cr["var"]:.4f} · 무위험 {cr["rf"]*100:.1f}%<br>'
-                   f'&nbsp;&nbsp;f* = (μ−rf)/σ² = <b>{cr["fcont"]*100:+.0f}%</b>'
+                   f'<b>② 연속형 켈리</b>  μ {cr["mu"]*100:+.1f}% · '
+                   f'σ<sub>하방</sub> {cr["sd_dn"]*100:.1f}% '
+                   f'<span class="dim">(전체 σ {cr["sd"]*100:.1f}%)</span> · '
+                   f'무위험 {cr["rf"]*100:.1f}%<br>'
+                   f'&nbsp;&nbsp;경험분포 최적 f* = <b>{cr["fcont"]*100:+.0f}%</b>'
                    f'{" → 보정 " + format(cr["fcontc"]*100, "+.0f") + "%" if abs(cr["fcont"]-cr["fcontc"])>1e-9 else ""}'
                    f' · 표본 {cr["n"]}개(독립 약 {max(1,cr["n"]//12)}개)</div>')
         return (f'<div class="kb"><div class="kb-h">{lab}</div>'
@@ -1070,7 +1118,7 @@ def kelly_section(AK, AQ):
                 f'<div class="rawscroll"><table class="raw kt"><thead>'
                 f'<tr><th rowspan="2">국면</th>'
                 f'<th colspan="6" class="grp">① 단순 켈리  f* = p − q/b</th>'
-                f'<th colspan="4" class="grp">② 연속형 켈리  f* = (μ−rf)/σ²</th>'
+                f'<th colspan="4" class="grp">② 연속형 켈리  경험분포 E[log] 최대화</th>'
                 f'<th rowspan="2">n</th></tr>'
                 f'<tr><th>p(승)</th><th>q(패)</th><th>평균이익</th><th>평균손실</th>'
                 f'<th>손익비 b</th><th class="bd">f*</th>'
@@ -1114,10 +1162,14 @@ def kelly_section(AK, AQ):
             f'<p class="note" style="margin-top:0"><b>두 가지 켈리를 나란히 보여줍니다.</b><br>'
             f'<b>① 단순 켈리 f* = p − q/b</b> — 결과를 이겼다/졌다로만 나눕니다. '
             f'도박에서 쓰는 원형이고 직관적이지만, 이겼을 때가 <i>얼마나</i> 흔들렸는지는 무시합니다.<br>'
-            f'<b>② 연속형 켈리 f* = (μ − rf) / σ²</b> — 수익률을 연속 분포로 보고 '
-            f'초과수익(μ−rf)을 분산(σ²)으로 나눕니다. 변동성이 큰 국면에서 자동으로 비중을 줄이므로 '
+            f'<b>② 연속형 켈리 — 경험분포 E[log] 최대화</b> — 과거 같은 국면의 '
+            f'수익 분포를 <b>그대로 써서</b> 기대로그성장이 가장 큰 비중을 찾습니다. '
+            f'흔히 쓰는 f*=(μ−rf)/σ² 는 로그효용의 2차 근사라 사실상 정규분포를 '
+            f'전제하는데, 12개월 수익도 완전한 정규는 아닙니다(초과첨도 +1.9~3.0). '
+            f'경험분포 방식은 분포 가정이 없고, 파산 구간에서 log가 −∞로 발산해 '
+            f'과베팅을 스스로 막습니다. 손실 위험이 큰 국면에서 자동으로 비중을 줄이므로 '
             f'주식처럼 결과가 연속적인 자산에는 이쪽이 이론적으로 더 맞습니다. '
-            f'다만 σ² 추정이 표본에 민감해 값이 크게 튈 수 있습니다(표에서 상하한에 자주 걸리는 이유).<br>'
+            f'다만 표본이 국면당 60여개뿐이라 값이 튈 수 있습니다(표에서 상하한에 자주 걸리는 이유).<br>'
             f'대시보드 상단의 큰 숫자는 <b>①</b> 기준이며, 괄호 안에 ②를 함께 표기합니다. '
             f'두 값이 크게 다르면 그 국면의 추정이 불안정하다는 신호로 보시면 됩니다.</p>'
             f'<p class="note kwarn" style="margin-top:0"><b>표본 한계와 단조 보정.</b> '
