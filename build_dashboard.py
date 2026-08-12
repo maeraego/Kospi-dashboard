@@ -2091,17 +2091,44 @@ function draw(){{
              `<text x="${{(cx+5).toFixed(1)}}" y="${{mT+11}}" fill="#e0913b" font-size="9" font-family="ui-monospace">${{cutFrom}}~ 신호 사용</text>`;
     }}
   }}
+  // ── 최신값 숫자 표시 ──
+  //   지표마다 자릿수가 크게 달라(코스피 6,579 · VKOSPI 56.5 · 비율 0.30) 적응형 포맷을 쓴다.
+  //   선 끝에 점과 숫자를 붙이고, 정보줄에도 기준 시점과 함께 텍스트로 적는다.
+  const fmtV=v=>{{
+    const a=Math.abs(v);
+    if(a>=1000) return v.toLocaleString(undefined,{{maximumFractionDigits:0}});
+    if(a>=10) return v.toFixed(1);      // 100.72조 → 100.7 (0자리로 자르면 101이 돼 어긋난다)
+    return v.toFixed(2);
+  }};
+  const lastIdx=arr=>{{ for(let i=arr.length-1;i>=0;i--) if(arr[i]!=null) return i; return -1; }};
+  const eb=lastIdx(base), ei=lastIdx(ind);
+  let yb=eb>=0?Yb(base[eb]):null, yi=ei>=0?Yi(ind[ei]):null;
+  // 두 라벨이 겹치면 위아래로 살짝 벌린다
+  if(yb!=null&&yi!=null&&Math.abs(yb-yi)<13){{ if(yb<=yi){{yb-=7;yi+=7;}} else {{yb+=7;yi-=7;}} }}
+  let endLab='';
+  if(eb>=0) endLab+=`<circle cx="${{X(eb).toFixed(1)}}" cy="${{Yb(base[eb]).toFixed(1)}}" r="3.2" fill="#4a9fd4"/>`
+    +`<text x="${{(X(eb)+6).toFixed(1)}}" y="${{(yb+3.5).toFixed(1)}}" fill="#4a9fd4" font-size="11" font-weight="600" font-family="ui-monospace">${{fmtV(base[eb])}}</text>`;
+  if(ei>=0) endLab+=`<circle cx="${{X(ei).toFixed(1)}}" cy="${{Yi(ind[ei]).toFixed(1)}}" r="3.2" fill="#e0913b"/>`
+    +`<text x="${{(X(ei)+6).toFixed(1)}}" y="${{(yi+3.5).toFixed(1)}}" fill="#e0913b" font-size="11" font-weight="600" font-family="ui-monospace">${{fmtV(ind[ei])}}</text>`;
+  // 정보줄에 붙일 '오늘의 값' 문구
+  const asOf=D[Math.max(eb,ei)]||D[D.length-1];
+  const nowTxt=`<div class="ii-note" style="margin-top:4px">최신 <b>${{asOf}}</b> · `
+    +(eb>=0?`<span style="color:#4a9fd4">${{baseK}} <b>${{fmtV(base[eb])}}</b></span>`:'')
+    +(ei>=0?` · <span style="color:#e0913b">${{indK}} <b>${{fmtV(ind[ei])}}</b></span>`:'')+`</div>`;
+
   // 지표 정보(IC·가중치·방향 또는 점수 산출식)
   const info=document.getElementById('indInfo');
-  if(isScore){{ info.innerHTML=`<b>종합점수</b> — ${{DATA.scoremeta.method}}`; }}
+  if(isScore){{ info.innerHTML=`<b>종합점수</b> — ${{DATA.scoremeta.method}}`+nowTxt; }}
   else if(DATA.ic[indK]){{ const m=DATA.ic[indK];
     info.innerHTML=`<b>${{indK}}</b> · 예측력 IC <b>${{m.ic>=0?'+':''}}${{m.ic}}</b> · 최종가중 <b>${{m.w}}%</b> · ${{m.dir}} <span class="ii-note">(코스피 기준)</span>`
+      +nowTxt
       +(m.fromWhy?`<div class="ii-note" style="margin-top:4px;line-height:1.45">⚠ <b>${{m.from}}~ 구간만 신호에 사용.</b> ${{m.fromWhy}}</div>`:''); }}
-  else {{ info.innerHTML=`<b>${{indK}}</b> · 참고 지표 (합성점수 미사용)`; }}
+  else {{ info.innerHTML=`<b>${{indK}}</b> · 참고 지표 (합성점수 미사용)`+nowTxt; }}
   document.getElementById('chart').innerHTML=
     `<svg id="csvg" viewBox="0 0 ${{W}} ${{H}}">${{shade}}${{grid}}${{ax}}${{xt}}`+
     `<path d="${{path(base,Yb)}}" fill="none" stroke="#4a9fd4" stroke-width="1.8"/>`+
     `<path d="${{path(ind,Yi)}}" fill="none" stroke="#e0913b" stroke-width="1.8"/>`+
+    endLab+
     `<g id="cg" style="display:none">`+
     `<line id="cline" y1="${{mT}}" y2="${{H-mB}}" stroke="#5f7291" stroke-width="1" stroke-dasharray="3 3"/>`+
     `<circle id="cdb" r="4.5" fill="#4a9fd4" stroke="#0e1420" stroke-width="1.5"/>`+
