@@ -116,6 +116,9 @@ except Exception:
 #   [T+1 공표] 자금 수치는 다음 영업일에 공표된다. 월말 시점에 실제로 알 수 있는 값은
 #     전 영업일치이므로 일별에서 shift(1) 한 뒤 월말을 뽑는다. 이 보정이 없으면
 #     월말 종가와 같은 날 자금을 쓰게 돼 미세한 룩어헤드가 생긴다.
+#   2007년 신용공여 제도 급성장으로 규모가 한 자릿수 배 뛰었다(2006 0.47조 → 2007 4.40조).
+#   그 이전은 사실상 다른 시장이라 신호에서 잘라낸다. 차트에는 남기고 절단선만 긋는다.
+CREDIT_FROM = pd.Timestamp('2007-01-01')
 try:
     _kfp = 'kofia_daily.parquet'
     _kf = load(_kfp)
@@ -225,10 +228,20 @@ def signals_for(idx):
         sig.insert(3, ('선행 PBR', _fwd_pbr, -1, FMT_X, ('고평가', '저평가')))
     if idx == 'KOSPI' and HAS_CREDIT:
         # 레버리지가 높을수록 이후 12개월 수익이 나쁘다(prior −1, IC로 재확인됨).
-        # 꼬리가 특히 강하다: 하위 5% 진입 시 이후 1년 +31.4%/승률 98%,
-        # 상위 5% 진입 시 −12.2%/승률 19% (일별 표본 1998-06~, 스프레드 43.6%p).
-        sig.append(('신용융자/예탁금', df['신용융자/예탁금'], -1, FMT_2,
-                    ('레버리지 과열', '청산 완료')))
+        # ── 2007년 이전은 신호에서 제외 (구조 단절) ──
+        #   2007년 신용공여 제도가 급성장하며 규모 자체가 한 자릿수 배로 뛰었다.
+        #     2006년 신용융자 0.47조 · 비율 0.043  →  2007년 4.40조 · 비율 0.339 (9.4배)
+        #   이 구간을 섞으면 expanding 평균이 0.237로 끌려 내려가, 최근 5년 기준
+        #   1.7 백분위(사실상 최저)인 현재를 z=+0.28 '불리'로 표시하는 오류가 난다.
+        #   (예상PER이 레벨 z 대신 추세 괴리를 쓰는 것과 같은 이유 — 구조 변화 오염)
+        #   실측 비교(표본외 IC / 전환점 적중):
+        #     전기간 0.708 (2008·2024 바닥 놓침) · 2005~ 0.699 · 2008~ 0.705
+        #     EWM반감기5년 0.723 (2021 고점 놓침) · 2007~ 0.734 ★ 전환점 5/5 적중
+        #   차트에는 전 기간을 그대로 두고 절단선만 표시한다(과거 맥락은 보이게).
+        #   (6번째 원소를 쓰면 '주가성분 제거' 문구가 붙으므로 쓰지 않는다. 차트용 전체
+        #    시리즈는 comp 딕셔너리가 따로 들고 있고, 백분위는 절단 후 기준이 맞다.)
+        sig.append(('신용융자/예탁금', df['신용융자/예탁금'].where(df.index >= CREDIT_FROM),
+                    -1, FMT_2, ('레버리지 과열', '청산 완료')))
     return sig
 
 def _downside_sd(r, mu=None, ddof=1):
@@ -1306,12 +1319,17 @@ GLOSSARY = [
      '(원본 IC 0.565 → 코스피 성분 제거 후 0.421, 약 26%가 순환참조). '
      '이렇게 하면 극단 붕괴 없이 가중 과다만 교정됩니다.'),
     ('신용융자/예탁금', '신용융자 잔고 ÷ 투자자예탁금. <b>빚내서 산 돈을 대기 현금으로 나눈 투자자 레버리지</b>'
-     '(금융투자협회 FreeSIS 일별, 1998-06~). 높으면 빚으로 버티는 시장이라 작은 하락에도 반대매매가 연쇄되고, '
+     '(금융투자협회 FreeSIS 일별). 높으면 빚으로 버티는 시장이라 작은 하락에도 반대매매가 연쇄되고, '
      '낮으면 팔 사람이 이미 판 상태입니다. <b>코스피 전용</b>(코스닥은 표본외 개선이 +0.002로 노이즈 수준이라 제외). '
-     '<b>[강점]</b> 7일·1개월·3개월·6개월·1년 <b>다섯 구간 모두에서 유의</b>한 유일한 자금 신호입니다'
-     '(t=−3.6~−3.0). 다른 자금 지표는 단기엔 모멘텀(+), 장기엔 역발상(−)으로 부호가 뒤집혀 쓰기 어렵습니다. '
-     '꼬리가 특히 강해서, 하위 5% 진입 시 이후 1년 <b>+31.4%(승률 98%)</b>, 상위 5% 진입 시 '
-     '<b>−12.2%(승률 19%)</b>로 갈립니다. '
+     '<b>[2007년 이전 제외]</b> 2007년 신용공여 제도가 급성장하며 규모가 한 자릿수 배로 뛰었습니다'
+     '(신용융자 2006년 0.47조 → 2007년 4.40조, 비율 0.043 → 0.339). 그 이전은 사실상 다른 시장이라 '
+     '섞어서 평균을 내면 <b>지금이 최근 5년 중 최저 수준인데도 "불리"로 표시되는</b> 오류가 납니다. '
+     '그래서 신호는 2007년 이후로만 계산하고, 차트에는 맥락으로 남기되 절단선을 그었습니다. '
+     '<b>[강점]</b> 7일·1개월·3개월·6개월·1년 <b>다섯 구간 모두에서 유의</b>한 유일한 자금 신호입니다. '
+     '다른 자금 지표는 단기엔 모멘텀(+), 장기엔 역발상(−)으로 부호가 뒤집혀 쓰기 어렵습니다. '
+     '꼬리가 특히 강해서(2007~ 기준), 하위 5% 진입 시 이후 1년 <b>+30.4%(승률 96%)</b>, '
+     '상위 5% 진입 시 <b>−13.3%(승률 14%)</b>로 갈립니다(6개월은 각각 +26.6%/승률 100%, −8.2%/승률 20%). '
+     '전환점 적중도 좋아서 2011·2018·2021 고점에서 불리, 2020·2024 바닥에서 유리를 가리켰습니다. '
      '<b>[한계]</b> 단기 예측력의 크기 자체는 작습니다(7일 IC −0.08). 일간 자금 <i>변화</i>는 오히려 '
      '지수를 3일 <b>후행</b>하므로(교차상관 실측), 이 지표는 며칠 앞을 보는 망원경이 아니라 '
      '<b>시장이 얼마나 빚으로 버티고 있는지 재는 체온계</b>로 쓰는 것이 맞습니다. '
@@ -1489,6 +1507,13 @@ for _n in AK['ic']:
         DATA['ic'][_col] = {'ic': round(AK['ic'][_n], 3), 'w': round(AK['w'][_n] * 100),
                             'dir': ('낮을수록 강세' if AK['direction'][_n][0] < 0 else '높을수록 강세')
                                    + (' · 역발상' if AK['direction'][_n][1] else '')}
+# 구조 단절이 있어 일부 구간을 신호에서 제외한 지표: 차트에 절단선과 사유를 표시한다.
+#   (유불리 중앙값도 절단 이후 구간에서만 계산해야 차트와 신호 분해가 어긋나지 않는다)
+if HAS_CREDIT and '신용융자/예탁금' in DATA['ic']:
+    DATA['ic']['신용융자/예탁금']['from'] = CREDIT_FROM.strftime('%Y-%m')
+    DATA['ic']['신용융자/예탁금']['fromWhy'] = (
+        '2007년 신용공여 제도 급성장 (신용융자 2006년 0.47조 → 2007년 4.40조, 9.4배). '
+        '이전 구간은 사실상 다른 시장이라 신호 계산에서 제외 — 차트에는 맥락으로 남김.')
 DATA['scoremeta'] = {'method': '각 지표를 강세방향 z-score로 변환 → 예측력(IC) 기반 Ridge 다변량 가중합. 양수=유리, 음수=불리.'}
 # 드롭다운 순서 = 신호 분해의 번호 순서(가중치 큰 순)와 일치시킴
 SIG2COL = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '한국VIX': '한국VIX',
@@ -1942,7 +1967,13 @@ function draw(){{
         if(Math.abs(dn)>1e-9){{const sl=(cnt*sxy-sx*sy)/dn, ic_=(sy-sl*sx)/cnt;
           trend={{slope:sl,intercept:ic_}};}}}}
     }}
-    const iv=ind.filter(v=>v!=null).sort((a,b)=>a-b);
+    // 구조 단절 지표: 절단 이후 구간만으로 중앙값을 잡는다. 옛 제도 구간을 섞으면
+    //   차트 경계선(중앙값)과 신호 분해(절단 후 z-score)가 서로 다른 답을 내놓는다.
+    const cutFrom=meta&&meta.from;
+    let cutIdx=-1;
+    if(cutFrom){{ for(let i=0;i<n;i++){{ if(D[i]>=cutFrom){{ cutIdx=i; break; }} }} }}
+    const ivSrc=(cutIdx>0)?ind.slice(cutIdx):ind;
+    const iv=ivSrc.filter(v=>v!=null).sort((a,b)=>a-b);
     if(trend){{
       // 우상향 추세선: 각 x에서 exp(slope*i+intercept)
       const y0=Yi(Math.exp(trend.intercept)), y1v=Yi(Math.exp(trend.slope*(n-1)+trend.intercept));
@@ -1972,12 +2003,21 @@ function draw(){{
             `<text x="${{W-mR-4}}" y="${{(medY+12).toFixed(1)}}" fill="${{dnFill}}" font-size="9.5" text-anchor="end" font-family="ui-monospace">${{dnLab}}</text>`+
             `<text x="${{mL+4}}" y="${{(medY-4).toFixed(1)}}" fill="#8b98ab" font-size="9" font-family="ui-monospace">중앙값 ${{medV>=1000?Math.round(medV).toLocaleString():medV.toFixed(medV>=100?0:2)}}</text>`;
     }}
+    // 구조 단절선: 제외 구간을 어둡게 덮고 세로 점선 + 사유 라벨
+    if(cutIdx>0){{
+      const cx=X(cutIdx);
+      shade+=`<rect x="${{mL}}" y="${{mT}}" width="${{(cx-mL).toFixed(1)}}" height="${{H-mT-mB}}" fill="#0b0e14" opacity="0.45"/>`+
+             `<line x1="${{cx.toFixed(1)}}" y1="${{mT}}" x2="${{cx.toFixed(1)}}" y2="${{H-mB}}" stroke="#e0913b" stroke-dasharray="3 3" stroke-width="1.2"/>`+
+             `<text x="${{(cx-5).toFixed(1)}}" y="${{mT+11}}" fill="#8b98ab" font-size="9" text-anchor="end" font-family="ui-monospace">신호 제외</text>`+
+             `<text x="${{(cx+5).toFixed(1)}}" y="${{mT+11}}" fill="#e0913b" font-size="9" font-family="ui-monospace">${{cutFrom}}~ 신호 사용</text>`;
+    }}
   }}
   // 지표 정보(IC·가중치·방향 또는 점수 산출식)
   const info=document.getElementById('indInfo');
   if(isScore){{ info.innerHTML=`<b>종합점수</b> — ${{DATA.scoremeta.method}}`; }}
   else if(DATA.ic[indK]){{ const m=DATA.ic[indK];
-    info.innerHTML=`<b>${{indK}}</b> · 예측력 IC <b>${{m.ic>=0?'+':''}}${{m.ic}}</b> · 최종가중 <b>${{m.w}}%</b> · ${{m.dir}} <span class="ii-note">(코스피 기준)</span>`; }}
+    info.innerHTML=`<b>${{indK}}</b> · 예측력 IC <b>${{m.ic>=0?'+':''}}${{m.ic}}</b> · 최종가중 <b>${{m.w}}%</b> · ${{m.dir}} <span class="ii-note">(코스피 기준)</span>`
+      +(m.fromWhy?`<div class="ii-note" style="margin-top:4px;line-height:1.45">⚠ <b>${{m.from}}~ 구간만 신호에 사용.</b> ${{m.fromWhy}}</div>`:''); }}
   else {{ info.innerHTML=`<b>${{indK}}</b> · 참고 지표 (합성점수 미사용)`; }}
   document.getElementById('chart').innerHTML=
     `<svg id="csvg" viewBox="0 0 ${{W}} ${{H}}">${{shade}}${{grid}}${{ax}}${{xt}}`+
