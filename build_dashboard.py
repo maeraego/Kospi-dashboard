@@ -124,6 +124,14 @@ try:
     _kf = load(_kfp)
     _cr = (_kf['신용융자'] / _kf['투자자예탁금']).shift(1).resample('ME').last()
     df['신용융자/예탁금'] = _cr.reindex(df.index)
+    # 원계열도 참고 지표로 싣는다(합성점수엔 안 들어감, 차트 비교용).
+    #   레벨은 통화량과 함께 팽창하므로 차트에서 우상향 추세선을 경계로 쓴다(NOMINAL 목록).
+    for _src, _lab in [('투자자예탁금', '고객예탁금(조원)'), ('신용융자', '신용융자(조원)'),
+                       ('위탁매매미수금', '미수금(조원)')]:
+        df[_lab] = (_kf[_src].shift(1) / 1e12).resample('ME').last().reindex(df.index)
+        COL_SRC[_lab] = '금융투자협회 FreeSIS'
+    df['반대매매비중(%)'] = _kf['반대매매비중'].shift(1).resample('ME').last().reindex(df.index)
+    COL_SRC['반대매매비중(%)'] = '금융투자협회 FreeSIS'
     HAS_CREDIT = int(df['신용융자/예탁금'].notna().sum()) >= 60
     COL_SRC['신용융자/예탁금'] = '금융투자협회 FreeSIS'
     if HAS_CREDIT:
@@ -1363,6 +1371,10 @@ DESC = {
  'WTI':'WTI 유가','USD_BROAD':'달러 광범위 지수','HY_OAS':'미 하이일드 스프레드',
  'KRW_USD':'원/달러(FRED, 교차검증용)','예상PER':'코스피 12개월 선행 PER',
  '신용융자/예탁금':'신용융자 잔고 ÷ 투자자예탁금 (투자자 레버리지)',
+ '고객예탁금(조원)':'투자자예탁금 잔고 (장내파생 예수금 제외)',
+ '신용융자(조원)':'신용거래융자 잔고 (유가증권+코스닥)',
+ '미수금(조원)':'위탁매매 미수금 (결제 못 한 외상 매수)',
+ '반대매매비중(%)':'미수금 대비 실제 반대매매 체결 비중',
 }
 def data_section():
     rows = ''
@@ -1479,6 +1491,8 @@ comp = {
     'M2 증가율': df['M2'].pct_change(12, fill_method=None) * 100 if 'M2' in df else None,
     '시가총액/M2': (df['KOSPI_시총'] / df['M2'].ffill()) if ('M2' in df and 'KOSPI_시총' in df) else None,
     '신용융자/예탁금': df.get('신용융자/예탁금'),
+    '고객예탁금(조원)': df.get('고객예탁금(조원)'), '신용융자(조원)': df.get('신용융자(조원)'),
+    '미수금(조원)': df.get('미수금(조원)'), '반대매매비중(%)': df.get('반대매매비중(%)'),
     '코스피 종합점수': AK['sc'], '코스닥 종합점수': AQ['sc'],
 }
 comp = pd.DataFrame({k: v for k, v in comp.items() if v is not None}).loc['1995-01-31':]
@@ -1491,6 +1505,9 @@ DATA = {'dates': [d.strftime('%Y-%m') for d in comp.index],
         }
 # IC·가중치 정보(코스피 기준)를 지표명→값으로 매핑해 차트에 표시
 _SIG2COL2 = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '한국VIX': '한국VIX',
+             # 선행 PBR이 빠져 있었다. 그 탓에 차트가 방향 정보를 못 받아 기본값(위=유리)으로
+             # 칠했는데, 선행 PBR은 '낮을수록 강세'라 유불리가 정반대로 표시되고 있었다.
+             '선행 PBR': '선행 PBR',
              '환율(원/달러)': '환율', '경기선행지수': '경기선행지수', '신용스프레드': '신용스프레드',
              '일드커브': '일드커브', '국고채10년': '국고채10년',
              'WTI 유가': 'WTI 유가', '미국10년 YoY': '미국10년 YoY',
@@ -1950,12 +1967,17 @@ function draw(){{
     //   수평 중앙값선으로 비교하면 옛날 낮은 값과 지금 높은 값을 같은 선으로 오판한다.
     //   → 이런 지표는 로그-선형 추세선(우상향)을 경계로 긋고, 나머지는 기존 수평 중앙값.
     const meta=DATA.ic[indK];
-    const lowGood=meta&&meta.dir&&meta.dir.indexOf('낮을')>=0;
-    const upFill=lowGood?'#e5484d':'#3fb37f';
-    const dnFill=lowGood?'#3fb37f':'#e5484d';
-    const upLab=lowGood?'불리':'유리', dnLab=lowGood?'유리':'불리';
+    // 방향이 검증된 신호만 유리/불리로 칠한다. 참고 지표(합성점수 미사용)는 방향을
+    //   확인한 적이 없으므로 색으로 유불리를 주장하지 않고 중립(위/아래)으로만 표시한다.
+    const hasDir=!!(meta&&meta.dir);
+    const lowGood=hasDir&&meta.dir.indexOf('낮을')>=0;
+    const upFill=hasDir?(lowGood?'#e5484d':'#3fb37f'):'#5f7291';
+    const dnFill=hasDir?(lowGood?'#3fb37f':'#e5484d'):'#5f7291';
+    const upLab=hasDir?(lowGood?'불리':'유리'):'위', dnLab=hasDir?(lowGood?'유리':'불리'):'아래';
     // 명목(추세성) 지표 목록 — 통화량과 연동돼 장기 우상향
-    const NOMINAL=['환율(원/달러)','WTI 유가','수출 YoY','수출금액','시가총액/M2','M2','M2/M1 비율','M2 증가율(YoY)'];
+    //   ※ 부분일치로 검사하므로 비율 지표('신용융자/예탁금')가 걸리지 않게 전체 표기를 쓴다
+    const NOMINAL=['환율(원/달러)','WTI 유가','수출 YoY','수출금액','시가총액/M2','M2','M2/M1 비율','M2 증가율(YoY)',
+                   '고객예탁금(조원)','신용융자(조원)','미수금(조원)'];
     const isNominal=NOMINAL.some(k=>indK.indexOf(k)>=0)||indK.indexOf('환율')>=0||indK.indexOf('유가')>=0;
     // 로그-선형 추세 적합 (양수 값만)
     let trend=null;
