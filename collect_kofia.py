@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 collect_kofia.py — 금융투자협회 FreeSIS 증시자금/신용공여 수집기
-사용법:  C:/python312/python.exe collect_kofia.py
+사용법:  C:/python312/python.exe collect_kofia.py          (증분 — 매일 갱신용)
+         C:/python312/python.exe collect_kofia.py --full   (전체 재수집 1998~)
 출력:    kofia_daily.parquet
+
+증분 수집: 기존 parquet이 있으면 마지막 날짜 −14일부터만 다시 받아 덮어쓴다.
+  전체는 요청 58건에 수 분이 걸려 매일 돌리기엔 과하다(FreeSIS 부하도 부담).
+  14일 버퍼는 반대매매·미수금이 소급 정정되는 경우를 흡수하기 위한 것.
 
 수집 항목 (일별, 원 단위):
   · 증시자금추이   STATSCU0100000060  (1998-06-18~)
@@ -18,7 +23,7 @@ API 메모 (역공학 결과 — 문서 없음):
   tmpV40/41 = 단위/소수점 지정. "1","1" 이면 원 단위 원본값.
   화면 정의(컬럼 이름·시작일)는 POST /meta/getSrvData.do 로 조회 가능.
 """
-import json, time, sys
+import json, time, sys, os
 import urllib.request
 import pandas as pd
 
@@ -95,21 +100,72 @@ def collect(service_id, chunk_years=1):
     return out.apply(pd.to_numeric, errors="coerce")
 
 
-def main():
-    print("[수집] 금융투자협회 FreeSIS")
-    parts = []
-    for sid in SPECS:
-        d = collect(sid)
-        if d is None:
-            print(f"[경고] {sid} 수집 실패")
-            continue
-        parts.append(d)
-    if not parts:
-        print("[중단] 수집된 데이터 없음"); sys.exit(1)
+def collect_recent(service_id, since):
+    """증분 수집: since~오늘 한 구간만. 기간이 짧아 32KB 잘림도 안 생긴다."""
+    cols, _ = SPECS[service_id]
+    today = pd.Timestamp.today().strftime("%Y%m%d")
+    rows = fetch(service_id, since, today)
+    print(f"  · {service_id} {since}~{today}  n={len(rows)}  (증분)")
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["TMPV1"], format="%Y%m%d")
+    out = df[["date"] + [c for c in cols if c in df.columns]].rename(columns=cols)
+    out = out.set_index("date").sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    return out.apply(pd.to_numeric, errors="coerce")
 
-    df = parts[0]
-    for p in parts[1:]:
-        df = df.join(p, how="outer")
+
+OUT = "kofia_daily.parquet"
+RAW_COLS = [c for _sp in SPECS.values() for c in _sp[0].values()]
+
+
+def main():
+    # 매일 28년치를 다시 받으면 요청 58건 + 수 분이 걸린다(FreeSIS 부하도 부담).
+    # 기존 parquet이 있으면 마지막 날짜 이전 10영업일부터만 다시 받아 덮어쓴다.
+    #   (10일 버퍼 = 반대매매·미수금 등이 소급 정정되는 경우 흡수)
+    # 전체 재수집이 필요하면:  collect_kofia.py --full
+    full = "--full" in sys.argv
+    prev = None
+    if not full and os.path.exists(OUT):
+        try:
+            prev = pd.read_parquet(OUT)
+        except Exception as e:
+            print(f"[경고] 기존 {OUT} 읽기 실패 → 전체 수집: {e}")
+            prev = None
+
+    print("[수집] 금융투자협회 FreeSIS" + ("  (전체)" if prev is None else "  (증분)"))
+    parts = []
+    if prev is not None and len(prev):
+        since = (prev.index.max() - pd.Timedelta(days=14)).strftime("%Y%m%d")
+        for sid in SPECS:
+            d = collect_recent(sid, since)
+            if d is not None:
+                parts.append(d)
+        if not parts:
+            print("[정보] 새 데이터 없음 - 기존 파일 유지")
+            return
+        new = parts[0]
+        for p in parts[1:]:
+            new = new.join(p, how="outer")
+        # 겹치는 날짜는 새로 받은 값이 이긴다(정정 반영)
+        df = pd.concat([prev.drop(columns=[c for c in prev.columns if c not in RAW_COLS],
+                                  errors="ignore"), new])
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        added = len(df) - len(prev)
+        print(f"  → 기존 {len(prev)}행 + 신규 {max(added,0)}행 = {len(df)}행")
+    else:
+        for sid in SPECS:
+            d = collect(sid)
+            if d is None:
+                print(f"[경고] {sid} 수집 실패")
+                continue
+            parts.append(d)
+        if not parts:
+            print("[중단] 수집된 데이터 없음"); sys.exit(1)
+        df = parts[0]
+        for p in parts[1:]:
+            df = df.join(p, how="outer")
     df.index.name = "date"
 
     # ── 파생 지표 ──
@@ -119,7 +175,7 @@ def main():
     if "신용융자" in df:
         df["신용_대주비"] = df["신용융자"] / df["대주"].replace(0, pd.NA)
 
-    df.to_parquet("kofia_daily.parquet")
+    df.to_parquet(OUT)
     print("\n" + "=" * 60)
     print(f"기간 : {df.index[0].date()} ~ {df.index[-1].date()}  ({len(df)} rows)")
     for c in df.columns:
