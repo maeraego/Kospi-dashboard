@@ -23,6 +23,7 @@ STEPS = [
     ("ECOS (국내 매크로)",   "collect_ecos.py"),
     ("FRED (글로벌 매크로)", "collect_fred.py"),
     ("KOFIA(신용잔고·예탁금)", "collect_kofia.py"),
+    ("VKOSPI(변동성지수)",   "collect_vkospi.py"),
     ("FLOW (투자자별 수급)", "collect_flow.py"),
 ]
 
