@@ -13,8 +13,14 @@ echo. >> "%LOG%"
 echo ============================================ >> "%LOG%"
 echo Run started: %date% %time% >> "%LOG%"
 
-REM 1) collect data (KRX/ECOS/FRED/FLOW)
+REM 1) collect data (KRX/ECOS/FRED/KOFIA/VKOSPI/FLOW)
 C:\python312\python.exe update_all.py >> "%LOG%" 2>&1
+
+REM 1-2) build the dashboard here (the cloud no longer does it)
+REM      Pages is off and the repo is private, so the local PC makes the file
+REM      and drops a dated copy in share\ ready to send.
+C:\python312\python.exe build_dashboard.py >> "%LOG%" 2>&1
+C:\python312\python.exe make_share.py >> "%LOG%" 2>&1
 
 REM 2) pull remote first (avoid push rejection), then push if data changed
 git pull --no-edit >> "%LOG%" 2>&1

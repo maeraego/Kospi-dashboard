@@ -20,3 +20,6 @@ regime_state.json
 dram_*.png
 or_*.png
 weekly_report_log.txt
+
+# 공유용 산출물 (매일 재생성, 저장소에 쌓을 필요 없음)
+share/
