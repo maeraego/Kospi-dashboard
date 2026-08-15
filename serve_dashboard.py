@@ -112,6 +112,8 @@ def do_update(fwd, ni1, ni2):
         emit("── 예상순이익 ── 입력값 없음 (기존 값 유지)")
 
     ok &= run_stream('build_dashboard.py', label='대시보드 생성')
+    # 계절성 대시보드는 별개 파일이라 같이 갱신해 준다(실패해도 메인엔 영향 없음).
+    run_stream('season_dashboard.py', label='계절성 대시보드 생성')
 
     took = time.time() - JOB['started_at']
     emit("")

@@ -103,15 +103,17 @@ jobs:
           # dashboard.html은 로컬 PC 전용이므로 클라우드가 건드리지 않는다
           # (양쪽이 같은 파일을 커밋하면 매번 병합 충돌이 나기 때문).
           python build_dashboard.py
+          python season_dashboard.py
           mkdir -p docs
           cp dashboard.html docs/index.html
-          rm -f dashboard.html
+          cp season_dashboard.html docs/season.html
+          rm -f dashboard.html season_dashboard.html
 
       - name: 커밋 & 푸시
         run: |
           git config user.name  "dashboard-bot"
           git config user.email "actions@github.com"
-          git add -A docs/index.html *.parquet *.csv 2>/dev/null || true
+          git add -A docs/index.html docs/season.html *.parquet *.csv 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "변경 없음"
           else

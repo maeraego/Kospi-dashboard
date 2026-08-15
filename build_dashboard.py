@@ -37,6 +37,18 @@ if _missing:
 
 def load(n): return pd.read_parquet(os.path.join(HERE, n))
 
+# ── 계절성(핼러윈 효과) 코어 ──
+#   "5~10월 지옥 / 11~4월 천국"은 실측으로 사실이지만(코스피 p=0.022, 코스닥 p=0.001),
+#   이 대시보드의 예측지평은 12개월이라 계절성이 정의상 상쇄된다(진입월별 12개월 수익 p=0.76·0.93).
+#   그래서 종합점수에는 넣지 않고, ① 참고 오버레이 패널 ② 켈리 진입 타이밍 조정으로만 쓴다.
+#   season_core 가 없거나 깨져도 메인 대시보드는 그대로 나와야 한다.
+try:
+    import season_core as SEA
+    HAS_SEASON = True
+except Exception as _e:                     # noqa: BLE001
+    SEA, HAS_SEASON = None, False
+    print(f'[경고] season_core 로드 실패 — 계절 오버레이를 건너뜁니다: {_e}')
+
 # ── 원천별 로드 + 출처 귀속 추적 ──
 SRC_META = [
     ('krx_monthly.parquet',  'KRX 한국거래소',        'pykrx'),
@@ -1157,6 +1169,180 @@ def bet_backtest(idx='KOSPI', start=None):
         cohort(lambda s: 0.5, '고정 50:50'),
         cohort(lambda s: 0.7, '고정 70:30')])
 
+# ── 계절 오버레이 ────────────────────────────────────────────────────────
+_SEA_CACHE = {}
+
+
+def season_pack(idx):
+    """계절 통계 + 켈리 계절조정치. season_core 가 없으면 None.
+
+    켈리 앵커는 상하한을 ±150%/−50% 가 아니라 넓게(−300%~+800%) 잡고 구한다.
+    좁게 자르면 f_전체가 상한에 붙어 계절 효과가 통째로 사라진다(코스피 f_전체=+1.50 포화).
+    """
+    if not HAS_SEASON:
+        return None
+    if idx in _SEA_CACHE:
+        return _SEA_CACHE[idx]
+    cut = SEA.last_complete_month(_d.index)
+    r = SEA.monthly_returns(df[f'{idx}_종가'], cut)
+    anch = SEA.kelly_anchors(df[f'{idx}_종가'], df['국고채10년'], cut=cut, h=6,
+                             kelly_fn=lambda v: _kelly_empirical(v, 0.0, -3.0, 8.0, 441))
+    today = pd.Timestamp.today()
+    ent = today.to_period('M').to_timestamp('M')   # '이번 달 말에 진입하면' 기준
+    p = dict(cut=cut, r=r, tbl=SEA.month_table(r), ws=SEA.winter_vs_summer(r),
+             sy=SEA.season_years(r), sub=SEA.subperiods(r, cut), anch=anch,
+             dl=SEA.season_delta(anch, ent), now=SEA.season_now(today), ent=ent)
+    _SEA_CACHE[idx] = p
+    return p
+
+
+def season_kelly_row(a):
+    """켈리 표 아래 붙는 계절조정 한 줄. (HTML, 조정된 f) 반환."""
+    p = season_pack(a['idx'])
+    if p is None:
+        return '', None
+    bt = a['bet']
+    base = bt['now']
+    adj = max(bt['kmin'], min(bt['kmax'], base + p['dl']['adj']))
+    wfp = p['dl']['wf'] * 100
+    d = p['dl']['adj']
+    cc = '#3fb37f' if adj > 0 else '#e5484d'
+    arrow = '▲' if d > 0 else ('▼' if d < 0 else '–')
+    ac = '#3fb37f' if d > 0 else ('#e5484d' if d < 0 else '#8b98ab')
+    cap = ('상하한에 걸려 잘림' if abs(base + p['dl']['adj'] - adj) > 1e-9 else '')
+    return (f'<div class="skrow">'
+            f'<div class="sk-l">계절 조정 <span class="dim">(향후 6개월 진입 기준)</span></div>'
+            f'<div class="sk-v" style="color:{cc}">{adj*100:+.0f}%</div>'
+            f'<div class="sk-d">기본 {base*100:+.0f}% <span style="color:{ac}">{arrow} '
+            f'{d*100:+.0f}%p</span><br><span class="dim">겨울비중 {wfp:.0f}% · '
+            f'기울기 {p["anch"]["slope"]:+.2f}/겨울비중 · 축소 {SEA.SHRINK:.1f}배'
+            f'{" · " + cap if cap else ""}</span></div></div>'), adj
+
+
+def _sea_spark(tbl, w=250, h=52):
+    """월별 평균수익 미니 막대 — 겨울 초록 / 여름 빨강"""
+    vals = [t['mean'] for t in tbl]
+    lo, hi = min(min(vals), 0), max(max(vals), 0)
+    rng = (hi - lo) or 1
+    lo -= rng * .12; hi += rng * .12; rng = hi - lo
+    Y = lambda v: (hi - v) / rng * h
+    bw = w / 12
+    out = [f'<svg viewBox="0 0 {w} {h}" class="seaspark">']
+    out.append(f'<line x1="0" x2="{w}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" stroke="#3a465a"/>')
+    for i, t in enumerate(tbl):
+        x = i * bw + bw * .17
+        y0, y1 = Y(max(t['mean'], 0)), Y(min(t['mean'], 0))
+        c = '#3fb37f' if t['winter'] else '#e5484d'
+        out.append(f'<rect x="{x:.1f}" y="{y0:.1f}" width="{bw*.66:.1f}" '
+                   f'height="{max(y1-y0,0.6):.1f}" fill="{c}" rx="1.5">'
+                   f'<title>{t["name"]} 평균 {t["mean"]:+.2f}% · 승률 {t["win"]:.0f}%</title></rect>')
+    out.append('</svg>')
+    return ''.join(out)
+
+
+def season_section(AK, AQ):
+    if not HAS_SEASON:
+        return ''
+    P = {a['idx']: season_pack(a['idx']) for a in (AK, AQ)}
+    if any(v is None for v in P.values()):
+        return ''
+    now = P['KOSPI']['now']
+    ncls = 'ok' if now['winter'] else 'bad'
+
+    cols = ''
+    for lab, a in (('코스피', AK), ('코스닥', AQ)):
+        p = P[a['idx']]
+        ws, sy = p['ws'], p['sy']
+        rec = p['sub'][-2] if len(p['sub']) >= 2 else p['sub'][-1]     # 최근 10년
+        skr, _ = season_kelly_row(a)
+        # 월별 승률 한 줄 요약
+        best = max(p['tbl'], key=lambda t: t['mean']); worst = min(p['tbl'], key=lambda t: t['mean'])
+        cols += (f'<div class="seac"><div class="seac-h">{lab}</div>'
+                 f'{_sea_spark(p["tbl"])}'
+                 f'<div class="seagrid">'
+                 f'<div><span class="k">11~4월 «천국»</span>'
+                 f'<span class="v" style="color:#3fb37f">{ws["w"]["ann"]:+.1f}%<small>/년</small></span>'
+                 f'<span class="c">월평균 {ws["w"]["mean"]:+.2f}% · 승률 {ws["w"]["win"]:.0f}%</span></div>'
+                 f'<div><span class="k">5~10월 «지옥»</span>'
+                 f'<span class="v" style="color:#e5484d">{ws["s"]["ann"]:+.1f}%<small>/년</small></span>'
+                 f'<span class="c">월평균 {ws["s"]["mean"]:+.2f}% · 승률 {ws["s"]["win"]:.0f}%</span></div>'
+                 f'<div><span class="k">격차 · 유의성</span>'
+                 f'<span class="v">{ws["diff"]:+.2f}<small>%p/월</small></span>'
+                 f'<span class="c">t={ws["t"]:.2f} · p={ws["p"]:.4f}</span></div>'
+                 f'<div><span class="k">겨울이 이긴 해</span>'
+                 f'<span class="v">{sy["beat"]}<small>/{sy["nyr"]}</small></span>'
+                 f'<span class="c">최근10년 격차 {rec["diff"]:+.2f}%p (p={rec["p"]:.3f})</span></div>'
+                 f'</div>'
+                 f'<div class="seabw">최고 <b>{best["name"]} {best["mean"]:+.2f}%</b> · '
+                 f'최저 <b>{worst["name"]} {worst["mean"]:+.2f}%</b></div>'
+                 f'{skr}</div>')
+
+    kk, kq = P['KOSPI'], P['KOSDAQ']
+    return (f'<div class="sec"><div class="sec-head">'
+            f'<div class="sec-t">계절 오버레이 <span class="sec-px">참고지표 · 종합점수 미반영</span></div>'
+            f'<div class="ctrls"><span class="dbadge {ncls}"><b>지금은 {now["label"]}</b></span>'
+            f'<button class="btn" onclick="toggleSE()">자세히 보기/숨기기</button></div></div>'
+            f'<div class="card">'
+            f'<div class="seabar"><div><span class="k">현재 구간</span>'
+            f'<span class="v {ncls}">{now["label"]}</span></div>'
+            f'<div><span class="k">{now["nextlabel"]}까지</span>'
+            f'<span class="v">{now["days"]}일 <small>({now["next"]:%Y-%m-%d})</small></span></div>'
+            f'<div><span class="k">이번 달 말 진입 시 겨울비중</span>'
+            f'<span class="v">{kk["dl"]["wf"]*100:.0f}%<small>/6개월</small></span></div>'
+            f'<div><span class="k">켈리 계절조정</span>'
+            f'<span class="v">코스피 {kk["dl"]["adj"]*100:+.0f}%p · 코스닥 {kq["dl"]["adj"]*100:+.0f}%p</span></div>'
+            f'</div>'
+            f'<div class="seacols">{cols}</div>'
+            f'<div id="seWrap" style="display:none">'
+            f'<p class="note"><b>무엇인가.</b> "코스피·코스닥은 5~10월 지옥, 11~4월 천국"이라는 '
+            f'속설(핼러윈 효과)을 보유 데이터로 검정한 결과입니다. 실제로 사실이었습니다 — '
+            f'{kk["r"].index[0]:%Y}년 이후 지수 상승분이 사실상 전부 11~4월에서 나왔고, '
+            f'5~10월은 누적으로 코스피 {kk["ws"]["s"]["cum"]:+.0f}% · 코스닥 {kq["ws"]["s"]["cum"]:+.0f}%입니다. '
+            f'여름에 몰린 대형 급락(IMF·닷컴·금융위기·코로나)을 전부 빼도, 상하 10%를 잘라낸 '
+            f'절사평균으로도 격차가 남습니다.</p>'
+            f'<p class="note"><b>왜 종합점수에 넣지 않았나.</b> 이 모델의 예측지평은 12개월입니다. '
+            f'12개월 창은 어느 달에 시작하든 12개 달을 <b>전부</b> 담기 때문에 계절성이 정의상 상쇄됩니다. '
+            f'실측해도 진입월별 12개월 수익 차이는 코스피 p=0.76 · 코스닥 p=0.93으로 IC가 0입니다. '
+            f'신호로 넣으면 |IC|≥0.10 필터에서 어차피 탈락하고, 억지로 넣으면 다른 신호의 가중만 갉아먹습니다. '
+            f'그래서 <b>가중치 0의 참고지표</b>로 두었습니다 — 시가총액/M2나 M2 증가율과 같은 취급입니다.</p>'
+            f'<p class="note"><b>대신 어디에 쓰나 — 켈리 진입 타이밍.</b> 지평을 6개월로 좁히면 계절성이 살아납니다. '
+            f'그리고 종합점수와의 상관이 코스피 +0.02 · 코스닥 +0.04로 <b>사실상 직교</b>합니다. '
+            f'기존 15개 신호(밸류·금리·환율·경기·변동성·레버리지)가 재지 않는 축이라, 종합점수를 '
+            f'대체하지 않고 <b>더합니다</b>. 그래서 베팅비율 표에 <b>계절 조정</b> 한 줄을 붙였습니다:<br>'
+            f'&nbsp;&nbsp;<b>조정 f* = 기본 f* + 축소계수 × 기울기 × (겨울비중 − 0.5)</b><br>'
+            f'겨울비중은 지금 진입했을 때 향후 6개월 중 11~4월이 차지하는 몫입니다(0.5면 조정 0). '
+            f'기울기는 겨울우세 창과 여름우세 창의 6개월 켈리 차이에서 나온 실측값입니다'
+            f'(코스피 {kk["anch"]["slope"]:+.2f} · 코스닥 {kq["anch"]["slope"]:+.2f}). '
+            f'축소계수 {SEA.SHRINK:.1f}은(는) 예측밴드의 국면프리미엄과 같은 관례로, 과거 강도의 절반만 반영합니다. '
+            f'<span class="dim">비율(승수)이 아니라 가산(%p)인 이유: 코스닥 6개월 켈리 전체값이 '
+            f'{kq["anch"]["all"]["f"]:+.2f}로 0 근처라 비율을 쓰면 13배로 폭발합니다.</span></p>'
+            f'<div class="rawscroll"><table class="raw kt"><thead><tr><th>지수</th><th>6개월 창</th>'
+            f'<th>n</th><th>승률 p</th><th>손익비 b</th><th>평균 μ</th><th>σ</th><th>켈리 f*</th>'
+            f'</tr></thead><tbody>'
+            + ''.join(
+                ''.join(f'<tr{" class=here" if key=="win" else ""}><td>{lab if key=="all" else ""}</td>'
+                        f'<td>{nm}</td><td class="dim">{P[ik]["anch"][key]["n"]}</td>'
+                        f'<td>{P[ik]["anch"][key]["p"]:.1f}%</td>'
+                        f'<td>{P[ik]["anch"][key]["b"]:.2f}</td>'
+                        f'<td>{P[ik]["anch"][key]["mu"]:+.2f}%</td>'
+                        f'<td class="dim">{P[ik]["anch"][key]["sd"]:.1f}%</td>'
+                        f'<td style="font-weight:600">{P[ik]["anch"][key]["f"]:+.2f}</td></tr>'
+                        for key, nm in (('all', '전체'), ('win', '겨울 우세 (겨울비중≥2/3)'),
+                                        ('sum', '여름 우세 (겨울비중≤1/3)')))
+                for ik, lab in (('KOSPI', '코스피'), ('KOSDAQ', '코스닥')))
+            + f'</tbody></table></div>'
+            f'<p class="note kwarn"><b>한계.</b> ① 코스피는 최근 10년 p={kk["sub"][-2]["p"]:.2f}로 '
+            f'유의하지 않습니다 — 강하게 남아있는 쪽은 코스닥(p={kq["sub"][-2]["p"]:.3f})입니다. '
+            f'② 바로 직전 2025년 여름은 코스피 +60.7% · 코스닥 +25.5%로 정반대였습니다. '
+            f'계절성은 평균의 이야기이지 매년의 약속이 아닙니다. '
+            f'③ 널리 알려진 아노말리라 차익거래로 소멸할 수 있습니다. '
+            f'④ 가격지수 기준이라 배당(4월 전후 배당락)은 반영되지 않았습니다. '
+            f'이런 이유로 조정 폭을 절반으로 축소했고, 종합점수 자체는 건드리지 않습니다.</p>'
+            f'<p class="note" style="margin-bottom:0">월별 표·시즌별 연도·백테스트 등 전체 검증은 '
+            f'<a class="slink" id="seaLink" href="season.html">계절성 전용 대시보드</a>에 있습니다.</p>'
+            f'</div></div></div>')
+
+
 def kelly_section(AK, AQ):
     def block(lab, a):
         bt = a['bet']; nb = bt['now']; ck = bt['cur_kb']
@@ -1199,11 +1385,13 @@ def kelly_section(AK, AQ):
                    f'&nbsp;&nbsp;경험분포 최적 f* = <b>{cr["fcont"]*100:+.0f}%</b>'
                    f'{" → 보정 " + format(cr["fcontc"]*100, "+.0f") + "%" if abs(cr["fcont"]-cr["fcontc"])>1e-9 else ""}'
                    f' · 표본 {cr["n"]}개(독립 약 {max(1,cr["n"]//12)}개)</div>')
+        skr, _ = season_kelly_row(a)
         return (f'<div class="kb"><div class="kb-h">{lab}</div>'
                 f'<div class="kb-big" style="color:{cc}">{nb*100:+.0f}%</div>'
                 f'<div class="kb-cap">현재 국면({bt["rows"][ck]["nm"] if bt["rows"] else "-"}) · '
                 f'단순 켈리 기준 <span class="dim">(연속형 '
                 f'{bt["rows"][ck]["fcontc"]*100:+.0f}%)</span></div>'
+                f'{skr}'
                 f'{sub}'
                 f'<div class="rawscroll"><table class="raw kt"><thead>'
                 f'<tr><th rowspan="2">국면</th>'
@@ -1504,7 +1692,7 @@ for _c in ('KOSPI_PER', 'KOSDAQ_PER', '국고채10년', '수출금액', '예상P
            'KOSPI_종가', 'KOSDAQ_종가'):
     if _c in df.columns: USED_COLS.add(_c)
 body = (section('코스피', AK) + section('코스닥', AQ) + weights_section(AK, AQ)
-        + kelly_section(AK, AQ) + data_section() + glossary_section())
+        + season_section(AK, AQ) + kelly_section(AK, AQ) + data_section() + glossary_section())
 
 # ── 데이터 신선도 배지 ──
 _DATA_ASOF = _d.dropna(how='all').index[-1]              # KRX 일별 마지막 거래일
@@ -1713,6 +1901,31 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .updlog{{font-family:var(--mono);font-size:11.5px;color:#a8b3c4;white-space:pre-wrap;
   max-height:260px;overflow:auto;line-height:1.6}}
 .updlog .ok{{color:#3fb37f}}.updlog .err{{color:#e5484d}}.updlog .hi{{color:#e6edf3}}
+/* ── 계절 오버레이 ── */
+.seabar{{display:flex;gap:26px;flex-wrap:wrap;padding:2px 0 14px;margin-bottom:14px;
+  border-bottom:1px solid var(--line)}}
+.seabar .k{{display:block;font-size:10.5px;color:var(--mut);margin-bottom:3px}}
+.seabar .v{{font-family:var(--mono);font-size:15px;font-weight:600}}
+.seabar .v small{{font-size:11px;color:var(--mut);font-weight:400}}
+.seabar .v.ok{{color:#3fb37f}}.seabar .v.bad{{color:#e5484d}}
+.seacols{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+@media(max-width:700px){{.seacols{{grid-template-columns:1fr}}}}
+.seac{{background:#101725;border:1px solid var(--line);border-radius:11px;padding:14px 15px}}
+.seac-h{{font-size:14px;font-weight:700;margin-bottom:8px}}
+.seaspark{{width:100%;height:52px;display:block;margin-bottom:11px}}
+.seagrid{{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}}
+.seagrid .k{{display:block;font-size:10.5px;color:var(--mut);margin-bottom:2px}}
+.seagrid .v{{display:block;font-family:var(--mono);font-size:18px;font-weight:650;line-height:1.15}}
+.seagrid .v small{{font-size:10.5px;color:var(--mut);font-weight:400;margin-left:1px}}
+.seagrid .c{{display:block;font-size:10px;color:#5b6678;margin-top:3px;line-height:1.45}}
+.seabw{{font-size:10.5px;color:#5b6678;margin-top:11px}}
+.seabw b{{color:#b9c4d4;font-family:var(--mono)}}
+.skrow{{display:flex;align-items:center;gap:11px;margin-top:11px;padding:9px 11px;
+  background:#0d1424;border:1px solid #22304a;border-radius:9px}}
+.sk-l{{font-size:11px;color:var(--mut);flex:none;max-width:96px;line-height:1.45}}
+.sk-v{{font-family:var(--mono);font-size:23px;font-weight:650;flex:none}}
+.sk-d{{font-size:10.5px;color:#b9c4d4;font-family:var(--mono);line-height:1.55;margin-left:auto;text-align:right}}
+.slink{{color:#6cb6e8}}
 .kcols{{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:16px 0}}
 @media(max-width:700px){{.kcols{{grid-template-columns:1fr}}}}
 .kb{{background:#101725;border:1px solid var(--line);border-radius:11px;padding:15px 16px}}
@@ -2246,6 +2459,15 @@ async function doUpdate(){{
 }}
 function toggleK(){{const w=document.getElementById('kWrap');
   w.style.display=w.style.display==='none'?'block':'none';}}
+function toggleSE(){{const w=document.getElementById('seWrap');
+  if(w) w.style.display=w.style.display==='none'?'block':'none';}}
+// 계절 대시보드 파일명이 로컬(season_dashboard.html)과 웹(docs/season.html)에서 다르다.
+// 웹 배포본은 index.html 이므로, 파일명이 dashboard.html 이면 로컬로 판단해 링크를 바꾼다.
+(function(){{
+  const a=document.getElementById('seaLink'); if(!a) return;
+  const f=location.pathname.split('/').pop();
+  if(f==='dashboard.html') a.href='season_dashboard.html';
+}})();
 function toggleD(){{const w=document.getElementById('dWrap');
   w.style.display=w.style.display==='none'?'block':'none';}}
 function toggleG(){{const w=document.getElementById('gWrap');
