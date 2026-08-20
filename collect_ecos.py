@@ -22,6 +22,15 @@ try:
 except Exception:
     pass
 
+# 콘솔이 cp949 여도 한글/기호(−, · 등) 출력에 죽지 않게 한다.
+# auto_update.bat 은 PYTHONIOENCODING 을 설정하지만, 직접 실행하면
+# 마지막 print 하나 때문에 수집 전체가 날아갈 수 있다.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 KEY = os.environ.get("ECOS_KEY")
 if not KEY:
     print("[중단] ECOS_KEY 가 설정되지 않았습니다.  .env 에  ECOS_KEY=...  를 넣으세요.")
@@ -118,7 +127,16 @@ S["선행지수"]     = collect("선행지수순환", "901Y067", "M", [r"선행�
 # 수출 (901Y118: 수출입 총괄 통관 수출액 / 403Y001: 수출금액지수)  — 둘 다 월별
 S["수출금액"]     = collect("수출금액통관", "901Y118", "M", [r"수출금액", r"수출액", r"^수출(?!입)"])
 S["수출금액지수"] = collect("수출금액지수", "403Y001", "M", [r"총지수", r"수출금액지수", r"^수출"])
-S["무역수지"]     = collect("무역수지순수출", "901Y118", "M", [r"무역수지", r"수지", r"순수출"])
+# 무역수지(순수출) = 수출금액 - 수입금액
+#   901Y118 표에는 '무역수지' 항목이 존재하지 않는다(수출금액 T002 / 수입금액 T004 뿐).
+#   과거에는 이름으로 찾으려다 매번 조용히 실패했고, build_dashboard 의 폴백
+#   때문에 '순수출' 차트에 총수출이 대신 그려지고 있었다. 직접 계산한다.
+_imp = collect("수입금액통관", "901Y118", "M", [r"수입금액", r"수입액", r"^수입"])
+if S.get("수출금액") is not None and _imp is not None:
+    S["무역수지"] = (S["수출금액"] - _imp).rename("무역수지")
+    print(f"  · 무역수지(계산)   <- 수출금액 - 수입금액  n={S['무역수지'].dropna().shape[0]}")
+else:
+    print("  x 무역수지        수출/수입 중 하나가 없어 계산 불가")
 
 # 통화량 (161Y006: M2 상품별 구성내역, 평잔·원계열 — 신지표. 1995~현재)
 #   ※ 구지표 101Y0xx 는 2004년 9월에 폐기됨. 신지표 표코드는 161Yxxx 대역.
