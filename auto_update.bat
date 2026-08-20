@@ -16,10 +16,16 @@ echo Run started: %date% %time% >> "%LOG%"
 REM 1) collect data (KRX/ECOS/FRED/KOFIA/VKOSPI/FLOW)
 C:\python312\python.exe update_all.py >> "%LOG%" 2>&1
 
-REM   (the cloud rebuilds the dashboard from the pushed parquet - see .github/workflows/update.yml)
-REM   To hand someone a file instead, run:  python build_dashboard.py && python make_share.py
+REM 2) rebuild the local dashboard EXPLICITLY (~4s)
+REM    Do not leave this to notify_regime.py. That script happens to regenerate
+REM    dashboard.html as a side effect of importing build_dashboard; if that import
+REM    is ever moved into a function or wrapped in try/except, the screen goes stale
+REM    silently with no error in the log. An explicit line removes that trap.
+REM    (the cloud rebuilds docs/index.html separately - see .github/workflows/update.yml)
+C:\python312\python.exe build_dashboard.py >> "%LOG%" 2>&1
 
-REM 2) pull remote first (avoid push rejection), then push if data changed
+
+REM 3) pull remote first (avoid push rejection), then push if data changed
 git pull --no-edit >> "%LOG%" 2>&1
 git add *.parquet *.csv >> "%LOG%" 2>&1
 git diff --staged --quiet
@@ -31,7 +37,7 @@ if errorlevel 1 (
   echo No data change - skip push. >> "%LOG%"
 )
 
-REM 3) notify by telegram only when the regime band changed
+REM 4) notify by telegram only when the regime band changed
 C:\python312\python.exe notify_regime.py >> "%LOG%" 2>&1
 
 echo Run finished: %date% %time% >> "%LOG%"

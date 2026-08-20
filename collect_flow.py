@@ -29,6 +29,16 @@ except Exception:
 
 import pandas as pd
 
+# ── .env 로드는 반드시 pykrx import '앞'에 와야 한다 ──
+#   pykrx는 import 시점에 KRX_ID/KRX_PW로 로그인을 시도한다.
+#   이게 빠져 있어 2026-08 내내 자동수집이 "KRX 로그인 실패"로 끝나고 있었다
+#   (collect_krx.py에는 처음부터 있었는데 이 파일만 누락).
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 try:
     from pykrx import stock
 except Exception:

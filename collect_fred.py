@@ -35,6 +35,9 @@ SERIES = {
     "WTI":        "DCOILWTICO",   # WTI 유가
     "USD_BROAD":  "DTWEXBGS",     # 달러 광범위 지수 (2006~)
     "HY_OAS":     "BAMLH0A0HYM2", # 미국 하이일드 신용스프레드(OAS)
+    "BAA10Y":     "BAA10Y",       # Baa회사채-국채10년 스프레드 (1990~). HY_OAS는 ICE 라이선스로 최근 3년만 제공돼 장기분석 불가
+    "AAA10Y":     "AAA10Y",       # Aaa회사채-국채10년 스프레드 (1990~)
+    "NASDAQ":     "NASDAQCOM",    # 나스닥 종합 (1990~). SP500/DJIA는 FRED가 최근 10년만 제공
     "KRW_USD":    "DEXKOUS",      # 원/달러 (FRED판, ECOS 교차검증용)
 }
 
