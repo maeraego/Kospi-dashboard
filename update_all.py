@@ -25,6 +25,8 @@ STEPS = [
     ("KOFIA(신용잔고·예탁금)", "collect_kofia.py"),
     ("VKOSPI(변동성지수)",   "collect_vkospi.py"),
     ("FLOW (투자자별 수급)", "collect_flow.py"),
+    # 파생 산출물 — 수집이 끝난 parquet을 읽어 만든다. 반드시 수집 뒤에 와야 한다.
+    ("공포탐욕지수 (파생)",   "fear_greed.py"),
 ]
 
 def run(label, script):
