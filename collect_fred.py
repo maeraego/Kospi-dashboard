@@ -39,6 +39,10 @@ SERIES = {
     "AAA10Y":     "AAA10Y",       # Aaa회사채-국채10년 스프레드 (1990~)
     "NASDAQ":     "NASDAQCOM",    # 나스닥 종합 (1990~). SP500/DJIA는 FRED가 최근 10년만 제공
     "KRW_USD":    "DEXKOUS",      # 원/달러 (FRED판, ECOS 교차검증용)
+    # 일본 10년 국채(월별). 일본은 캐리트레이드 자금의 발원지라
+    # 엔 금리가 오르면 글로벌 위험자산에서 자금이 빠지는 경로가 있다.
+    # 중국 장기금리는 FRED 에 대응 계열이 없어(IRLTLT01CNM156N 미제공) 제외.
+    "JP10Y":      "IRLTLT01JPM156N",
 }
 
 def fetch(series_id):
