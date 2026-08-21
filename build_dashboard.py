@@ -283,7 +283,7 @@ def signals_for(idx):
         ('PER',          per,                        -1, FMT_X,   ('고평가', '저평가')),
         (_yg_lab,        _yg,                        +1, FMT_PP,  ('확대', '축소')),
         ('실현변동성(20일)',       df[f'{idx}_변동성'],         +1, FMT_PCT, ('공포', '안정')),
-        ('VIX 급등(YoY)', _vixy,                     +1, FMT_YOY, ('급등', '진정')),
+        ('VIX 급등(YoY)(美)', _vixy,                  +1, FMT_YOY, ('급등', '진정')),
         ('수출 YoY',      exp_yoy,                    +1, FMT_YOY, ('증가', '감소')),
         ('WTI 유가',      _wti,                       -1, FMT_RATE, ('고유가', '저유가')),
         ('환율(원/달러)',  df['원달러'],               +1, FMT_WON, ('원화약세', '원화강세')),
@@ -292,7 +292,7 @@ def signals_for(idx):
         ('채산성(CPI-PPI)', _margin,                   +1, FMT_PP,  ('마진개선', '마진악화')),
         ('국채10년(日)',   _jp10,                      -1, FMT_RATE, ('고금리', '저금리')),
         ('경기선행지수',   df['선행지수'],             -1, FMT_1,   ('과열권', '침체권')),
-        ('신용스프레드',   df['신용스프레드'],          +1, FMT_SPR, ('확대', '안정')),
+        ('신용스프레드(韓)', df['신용스프레드'],        +1, FMT_SPR, ('확대', '안정')),
         ('일드커브(韓)',   df['국고채10년']-df['국고채3년'], +1, FMT_PP, ('스팁', '플랫')),
         ('국채10년(韓)',   df['국고채10년'],           -1, FMT_RATE, ('고금리', '저금리')),
         ('기준금리 YoY(韓)', _basey,                   -1, FMT_PP,  ('인상', '인하')),
@@ -524,7 +524,7 @@ def analyze(idx):
         #   음수가 되고, 그러면 코드가 방향을 뒤집어 정작 바닥에서 '약세(팔아라)'로 표시하는
         #   치명적 오류가 생긴다(2026 코스닥에서 확인). 그래서 이 신호들은 IC 부호와
         #   무관하게 base(+1, 높을수록 강세)를 강제한다.
-        if n in ('실현변동성(20일)', 'VKOSPI', 'VIX 급등(YoY)'):
+        if n in ('실현변동성(20일)', 'VKOSPI', 'VIX 급등(YoY)(美)'):
             eff = abs(base)                      # 항상 강세방향 고정
         bull_cols[n] = ez(s) * eff
         ic[n] = abs(float(r))                    # 단변량 예측력(참고용)
@@ -629,7 +629,7 @@ def analyze(idx):
     #     평상시(|z|<2)엔 증폭 0이라 기본 가중 유지 → 표본외 성능 보존.
     #     지금처럼 z=+3.6~5.2로 폭발하면 가중이 크게 커져 확실히 '유리'로 잡는다.
     #   실측 표본외 IC: k=0 0.79 → k=1.0 0.74 (약간 희생, 극단국면 포착과 맞바꿈).
-    _VOL_AMP = {'실현변동성(20일)': 1.0, 'VKOSPI': 1.0, 'VIX 급등(YoY)': 1.0}
+    _VOL_AMP = {'실현변동성(20일)': 1.0, 'VKOSPI': 1.0, 'VIX 급등(YoY)(美)': 1.0}
     _VOL_FLOOR = 0.03
     _cur_row = bull.loc[bull.dropna(how='all').index[-1]]
     _amped = False
@@ -1790,7 +1790,7 @@ comp = {
                         + (1.0 / df['예상PER'].where(df['예상PER'] > 0)) * 0.65)) if HAS_FPE else None,
     '순수출': df['무역수지'] if '무역수지' in df else df['수출금액'],
     '예상PER': df['예상PER'] if HAS_FPE else np.nan,
-    '경기선행지수': df['선행지수'], '신용스프레드': df['신용스프레드'],
+    '경기선행지수(韓)': df['선행지수'], '신용스프레드(韓)': df['신용스프레드'],
     '일드커브': df['국고채10년'] - df['국고채3년'],
     '일드갭': (100/df['예상PER'].where(df['예상PER'] > 0) - df['국고채10년']) if HAS_FPE
               else (100/df['KOSPI_PER'].where(df['KOSPI_PER'] > 0) - df['국고채10년']),
@@ -1802,12 +1802,12 @@ comp = {
                        if ('CPI' in df and 'PPI' in df) else None),
     'CPI 상승률': np.log(df['CPI']).diff(12) * 100 if 'CPI' in df else None,
     'PPI 상승률': np.log(df['PPI']).diff(12) * 100 if 'PPI' in df else None,
-    'WTI 유가': df.get('WTI'), '미국10년': df.get('US10Y'),
-    '미국10년 YoY': df['US10Y'].diff(12) if 'US10Y' in df else None,
-    'VIX 급등(YoY)': df['VIX'].pct_change(12) * 100 if 'VIX' in df else None,
+    'WTI 유가': df.get('WTI'), '국채10년(美)': df.get('US10Y'),
+    '국채10년 YoY(美)': df['US10Y'].diff(12) if 'US10Y' in df else None,
+    'VIX 급등(YoY)(美)': df['VIX'].pct_change(12) * 100 if 'VIX' in df else None,
     '기준금리 YoY': df['기준금리'].diff(12),
-    'VIX(미국)': df.get('VIX'), '달러지수': df.get('USD_BROAD'),
-    '미국2년': df.get('US2Y'), '미국 장단기차': df.get('T10Y2Y'),
+    'VIX(美)': df.get('VIX'), '달러지수(美)': df.get('USD_BROAD'),
+    '국채2년(美)': df.get('US2Y'), '장단기차(美)': df.get('T10Y2Y'),
     '회사채AA-': df.get('회사채3년AA'), 'CD91': df.get('CD91'),
     '수출금액지수': df.get('수출금액지수'), '코스닥 변동성': df.get('KOSDAQ_변동성'),
     'M1': df.get('M1'), 'M2': df.get('M2'),
@@ -1833,10 +1833,10 @@ _SIG2COL2 = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '실현변동성(20일)':
              # 선행 PBR이 빠져 있었다. 그 탓에 차트가 방향 정보를 못 받아 기본값(위=유리)으로
              # 칠했는데, 선행 PBR은 '낮을수록 강세'라 유불리가 정반대로 표시되고 있었다.
              '선행 PBR': '선행 PBR',
-             '환율(원/달러)': '환율', '경기선행지수': '경기선행지수', '신용스프레드': '신용스프레드',
+             '환율(원/달러)': '환율', '경기선행지수': '경기선행지수(韓)', '신용스프레드(韓)': '신용스프레드(韓)',
              '일드커브(韓)': '일드커브', '국채10년(韓)': '국고채10년',
-             'WTI 유가': 'WTI 유가', '미국10년 YoY': '미국10년 YoY',
-             'VIX 급등(YoY)': 'VIX 급등(YoY)', '기준금리 YoY(韓)': '기준금리 YoY',
+             'WTI 유가': 'WTI 유가', '국채10년 YoY(美)': '국채10년 YoY(美)',
+             'VIX 급등(YoY)(美)': 'VIX 급등(YoY)(美)', '기준금리 YoY(韓)': '기준금리 YoY',
              '기준금리(韓)': '기준금리',
              '수출 YoY': '순수출', '예상PER 괴리': '예상PER',
              '시가총액/M2': '시가총액/M2', 'M2 증가율(YoY)': 'M2 증가율', 'M2/M1 비율': 'M2/M1 비율',
@@ -1863,10 +1863,10 @@ DATA['scoremeta'] = {'method': '각 지표를 강세방향 z-score로 변환 →
 # 드롭다운 순서 = 신호 분해의 번호 순서(가중치 큰 순)와 일치시킴
 SIG2COL = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '실현변동성(20일)': '실현변동성(20일)', 'VKOSPI': 'VKOSPI',
            '선행 PBR': '선행 PBR',
-           '환율(원/달러)': '환율', '경기선행지수': '경기선행지수', '신용스프레드': '신용스프레드',
+           '환율(원/달러)': '환율', '경기선행지수': '경기선행지수(韓)', '신용스프레드(韓)': '신용스프레드(韓)',
            '일드커브(韓)': '일드커브', '국채10년(韓)': '국고채10년',
-           'WTI 유가': 'WTI 유가', '미국10년 YoY': '미국10년 YoY',
-           'VIX 급등(YoY)': 'VIX 급등(YoY)', '기준금리 YoY(韓)': '기준금리 YoY',
+           'WTI 유가': 'WTI 유가', '국채10년 YoY(美)': '국채10년 YoY(美)',
+           'VIX 급등(YoY)(美)': 'VIX 급등(YoY)(美)', '기준금리 YoY(韓)': '기준금리 YoY',
            '기준금리(韓)': '기준금리',
            '수출 YoY': '순수출', '예상PER 괴리': '예상PER',
              '시가총액/M2': '시가총액/M2', 'M2 증가율(YoY)': 'M2 증가율', 'M2/M1 비율': 'M2/M1 비율',
