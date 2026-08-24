@@ -740,19 +740,36 @@ def analyze(idx):
     tbl['n12'] = int((xy12['b'] == cbin).sum())
     tbl['NB'] = NB
 
-    # ── 지수 예측 범위: D방식 (현재가 × 장기추세 + 국면프리미엄 절반) ──
+    # ── 지수 예측 범위: D방식 (현재가 × 장기추세 + 국면프리미엄) ──
     #   [문제] 과거 "최유리 국면"은 대부분 폭락 직후 바닥(IMF·금융위기·코로나)이라, 그때의
     #   12개월 수익이 +40~200%다. 이걸 그대로 현재가에 적용하면, 지금처럼 지수가 이미
     #   고점(6,595)인데도 +49%(9,900)로 과대추정된다 — 출발점이 바닥이 아닌데 바닥 반등률을
     #   붙이는 오류.
     #   [D방식] 예측 중심 = 현재가 × exp(CAGR + 국면프리미엄×0.5).
     #     · 베이스는 장기추세(CAGR): 현재가에서 출발하므로 고점/저점 출발을 그대로 존중.
-    #     · 국면프리미엄 = (그 국면 과거수익 − 전체평균), 축소계수 0.5로 절반만 반영.
+    #     · 국면프리미엄 = (그 국면 과거수익 − 전체평균) × 축소계수(아래 참조).
     #       → 유리하면 CAGR 위로, 불리하면 CAGR 아래로. 단 과거 극단 반등률을 절반만 실어
     #         비현실적 폭등 예측을 억제한다.
     #     · 밴드폭은 그 국면의 로버스트 변동성(MAD×1.4826)으로 ±1.04σ(약 70% 구간).
     _px = float(df[f'{idx}_종가'].dropna().iloc[-1])
-    _SHRINK = 0.5
+    # ── 축소계수 — 지수별로 다르다 (실측: check_tail_cap.py, 워크포워드 201개월) ──
+    #   [왜 0.5에서 올렸나] 0.5는 예측 강도를 2.3배 눌러(보정기울기 2.34) 평시 정확도를
+    #     깎고 있었다. 축소 1.0에서 보정기울기 1.17·지수오차 15.03%→13.40%로 최적.
+    #   [왜 그래도 극단은 눌러두나] 0.5를 쓴 원래 이유(바닥 반등률을 이미 오른 지수에
+    #     붙이는 과대추정)는 2009-05에 실제로 났다 — 지수가 1,124→1,396으로 이미
+    #     반등했는데 점수는 여전히 최상위라, 축소 1.0이면 2,322를 예측한다(실제 1,641).
+    #     그래서 코스피는 양 끝 구간만 0.5로 남긴다: 평시 14.30%로 개선하면서 그 달의
+    #     최악 과대예측은 현행과 똑같은 +13.7%로 유지된다.
+    #   [코스닥은 왜 다른가] 1.0 전체가 오히려 악화(14.73%→15.07%)한다. 극단에서의
+    #     과소예측이 코스피만큼 심하지 않아, 양 끝 축소 대신 프리미엄 절대상한이 맞다
+    #     (1.0+상한0.20 → 14.28%로 최적).
+    #   [한계] 평가구간 7/7 진입이 코스피 19개월(중첩 보정 유효 ~1.6개)뿐이고 전부
+    #     실제 바닥이었다. "고점인데 점수가 최상위"라는 진짜 위험한 조합은 201개월 동안
+    #     한 번도 안 나왔다. 꼬리 안전성은 통계로 확인된 게 아니라 미검증 상태다.
+    if idx == 'KOSPI':
+        _SHRINK, _TAIL_SHRINK, _PREM_CAP = 1.0, 0.5, None
+    else:
+        _SHRINK, _TAIL_SHRINK, _PREM_CAP = 1.0, None, 0.20
     _bar12 = sum(raw_means) / NB          # 12개월 구간평균들의 평균(위 루프의 마지막 h=12 값)
     # 예측용 정렬표본(점수 오름차순) + 창 크기
     xy12s = xy12.sort_values('s').reset_index(drop=True)
@@ -763,8 +780,15 @@ def analyze(idx):
         seg = xy12s['y'].iloc[l:h_]
         if len(seg) < 5:
             return None
-        _prem = (float(seg.mean()) - _bar12) * _SHRINK
-        _center = _cagr_log + _prem       # 로그: 장기추세 + 국면프리미엄(절반)
+        # 최상위 구간만 누른다. 최하위까지 누르면 프리미엄이 위로 당겨져
+        #   1/7 예측이 2/7보다 높아지는 역전이 생긴다(실측: 7,044 vs 6,526).
+        #   억제의 근거였던 '바닥 반등률 외삽'도 상방 문제고, 평가구간에서 코스피는
+        #   1/7 진입이 0개월이라 하단을 누를 실측 근거 자체가 없다.
+        _k = _TAIL_SHRINK if (_TAIL_SHRINK is not None and _b == NB - 1) else _SHRINK
+        _prem = (float(seg.mean()) - _bar12) * _k
+        if _PREM_CAP is not None:
+            _prem = float(np.clip(_prem, -_PREM_CAP, _PREM_CAP))
+        _center = _cagr_log + _prem       # 로그: 장기추세 + 국면프리미엄
         _med = seg.median()
         _rsd = float((seg - _med).abs().median() * 1.4826)   # 로버스트 표준편차
         # 여러 신뢰구간을 미리 계산(사용자가 30/50/70/90% 선택). z: 정규분포 양측 분위.
@@ -777,8 +801,33 @@ def analyze(idx):
                     up=float((seg > 0).mean()),
                     center=_center, rsd=_rsd, bands=_bands)
 
-    _pc = _proj_for(cbin)
-    if _pc is not None:
+    # 각 구간(bin)의 예측 범위 — 체크박스로 국면이 바뀌면 예측 박스도 갱신
+    #   [순서 주의] 헤드라인 예측(proj)도 여기서 만든 값을 그대로 쓴다. 따로 계산하면
+    #   아래 단조 보정이 헤드라인엔 안 걸려, 현재 구간이 0·1일 때 박스와 사다리가
+    #   서로 다른 숫자를 보여준다.
+    projbins = {}
+    _raw = {b: _proj_for(b) for b in range(NB)}
+    _ok = [b for b in range(NB) if _raw[b] is not None]
+    # 기대수익 사다리(_mono)와 달리 예측밴드에는 단조 강제가 없어서, 구간평균이
+    #   살짝 뒤집힌 곳에서 "더 나쁜 국면인데 예측이 더 높은" 역전이 나온다
+    #   (실측: 1/7 6,554 > 2/7 6,526). 사다리와 같은 PAVA를 center에 걸어 맞춘다.
+    if _ok:
+        _cs = _mono([_raw[b]['center'] for b in _ok],
+                    [len(xy12s)] * len(_ok))
+        for _b, _c in zip(_ok, _cs):
+            _pb, _rsd = _raw[_b], _raw[_b]['rsd']
+            _Z = {30: 0.385, 50: 0.674, 70: 1.036, 90: 1.645}
+            projbins[_b] = dict(
+                lo=float(_px * np.exp(_c - 1.036 * _rsd)),
+                hi=float(_px * np.exp(_c + 1.036 * _rsd)),
+                med=float(_px * np.exp(_c)), up=_pb['up'],
+                bands={q: [float(_px * np.exp(_c - z * _rsd)),
+                           float(_px * np.exp(_c + z * _rsd))] for q, z in _Z.items()},
+                center=_c, rsd=_rsd)
+    tbl['projbins'] = projbins
+
+    if cbin in projbins:
+        _pc = projbins[cbin]
         _c, _rsd = _pc['center'], _pc['rsd']
         proj = dict(px=_px, up=_pc['up'],
                     p=[float(_px * np.exp(_c + z * _rsd)) for z in (-1.28, -0.52, 0.0, 0.52, 1.28)],
@@ -787,14 +836,6 @@ def analyze(idx):
                              (xy12['y'] * _SHRINK + (_cagr_log - _bar12 * _SHRINK)).values])
     else:
         proj = None
-    # 각 구간(bin)의 예측 범위 — 체크박스로 국면이 바뀌면 예측 박스도 갱신
-    projbins = {}
-    for _b in range(NB):
-        _pb = _proj_for(_b)
-        if _pb is not None:
-            projbins[_b] = dict(lo=_pb['lo'], hi=_pb['hi'], med=_pb['med'], up=_pb['up'],
-                                bands=_pb['bands'])
-    tbl['projbins'] = projbins
     tbl['px_now'] = _px
 
     # ── 베팅비율: 전통적 켈리 공식  f* = p − q/b ──────────────────
@@ -813,9 +854,12 @@ def analyze(idx):
     KMAX, KMIN = 1.5, -0.5
     betrows, bet_now, cur_kb = [], 0.0, 2
     if len(_S) >= 40:
-        edges = np.quantile(_S['s'], [.2, .4, .6, .8])
-        _S['kb'] = np.digitize(_S['s'], edges)
-        cur_kb = int(np.digitize([cur], edges)[0])       # ← 현재 점수로 판정
+        # [주의] 변수명을 edges로 두면 안 된다. 위(736행)에서 만든 국면 사다리 경계를
+        #   덮어써서, 아래 return의 qedges가 국면 경계(6개)가 아니라 켈리 경계를 자른
+        #   값(2개)으로 나간다. 이름이 qedges라 믿고 쓰면 조용히 틀리는 함정이었다.
+        kelly_edges = np.quantile(_S['s'], [.2, .4, .6, .8])
+        _S['kb'] = np.digitize(_S['s'], kelly_edges)
+        cur_kb = int(np.digitize([cur], kelly_edges)[0])  # ← 현재 점수로 판정
         names = ['매우 불리', '불리', '중립', '유리', '매우 유리']
         for b_ in range(5):
             _gsub = _S[_S['kb'] == b_]
@@ -1021,6 +1065,15 @@ def proj_svg(a, color):
             f'{band}{bars}{pxline}{medline}{labs}</svg>{axis}')
 
 def section(label, a):
+    # 예측밴드 설명 — 축소계수가 지수마다 달라 문구도 갈린다 (근거: check_tail_cap.py)
+    _shrtxt = ('국면 프리미엄을 그대로 얹되 <b>양 끝 구간(최상위·최하위)만 절반으로 눌러</b> '
+               '추정한 범위입니다. 과거 "유리 국면"은 대개 폭락 직후 바닥이라, 그때 반등률'
+               '(+40~200%)을 이미 반등한 지수에 그대로 붙이면 과대추정됩니다 '
+               '(2009-05에 실제로 발생 — 예측 1,883 vs 실제 1,641). '
+               '평상시 정확도는 살리고 그 위험만 억제했습니다.'
+               if a['idx'] == 'KOSPI' else
+               '국면 프리미엄을 그대로 얹되 <b>±20%로 상한을 둬</b> 추정한 범위입니다. '
+               '과거 극단 국면의 반등률을 제한 없이 적용하면 과대추정되기 때문입니다.')
     rl, rc = regime(a['pct'])
     m12, w12 = a['tbl'][12][a['cbin']]
     mcol = '#3fb37f' if m12 >= 0 else '#e5484d'
@@ -1040,9 +1093,7 @@ def section(label, a):
                      f'{proj_svg(a, rc)}'
                      f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면 기준, '
                      f'<b>현재가 {pj["px"]:,.0f}에서 장기추세(코스피 기준점 1980=100 이후 CAGR 약 9.5%)</b>만큼 오르는 것을 '
-                     f'중심으로, 국면 프리미엄을 절반(50%)만 얹어 추정한 범위입니다. '
-                     f'과거 "유리 국면"은 대개 폭락 직후 바닥이라 그때 반등률(+40~200%)을 지금 고점에 '
-                     f'그대로 적용하면 과대추정되므로, 국면 효과를 절반만 반영해 억제했습니다. '
+                     f'중심으로, {_shrtxt} '
                      f'구간(%)은 그 국면 과거 변동성 기준 신뢰구간입니다. '
                      f'예측이 아니라 과거 통계 기반 참고치이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
                      f'저성장 진입 시 과대추정될 수 있습니다.</div></div>')
