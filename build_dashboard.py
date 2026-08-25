@@ -766,8 +766,14 @@ def analyze(idx):
     #   [한계] 평가구간 7/7 진입이 코스피 19개월(중첩 보정 유효 ~1.6개)뿐이고 전부
     #     실제 바닥이었다. "고점인데 점수가 최상위"라는 진짜 위험한 조합은 201개월 동안
     #     한 번도 안 나왔다. 꼬리 안전성은 통계로 확인된 게 아니라 미검증 상태다.
+    #   [2026-08-25 갱신] 코스피 최상위 억제(0.5)를 뗐다. 구간별 실측에서 7/7의
+    #     평균오차가 -0.3163(과소예측)으로, 억제가 없어도 이미 한참 모자랐다.
+    #     떼면 지수오차 14.23% → 13.22%, 보정기울기 1.52 → 1.18로 둘 다 개선.
+    #     대가는 7/7 최악 과대예측이 +13.7% → +34.7%(2009-05)로 커지는 것.
+    #   코스닥은 상한을 유지한다. 1.0 전면적용이 오히려 최악(14.66% → 15.60%)이고,
+    #     7/7 평균오차도 +0.1004로 부호가 코스피와 반대(과대)라 억제가 필요하다.
     if idx == 'KOSPI':
-        _SHRINK, _TAIL_SHRINK, _PREM_CAP = 1.0, 0.5, None
+        _SHRINK, _TAIL_SHRINK, _PREM_CAP = 1.0, None, None
     else:
         _SHRINK, _TAIL_SHRINK, _PREM_CAP = 1.0, None, 0.20
     _bar12 = sum(raw_means) / NB          # 12개월 구간평균들의 평균(위 루프의 마지막 h=12 값)
@@ -825,6 +831,52 @@ def analyze(idx):
                            float(_px * np.exp(_c + z * _rsd))] for q, z in _Z.items()},
                 center=_c, rsd=_rsd)
     tbl['projbins'] = projbins
+
+    # ── 구간별 예측 정확도 실측 (워크포워드) ──
+    #   예측 옆에 "이 국면에서 과거 예측이 얼마나 빗나갔나"를 같이 보여주기 위한 것.
+    #   실측(코스피): 중간 구간은 오차 7%대로 정확하지만, 3/7은 76%의 달에서 과대예측
+    #   (예측 +2.8% vs 실제 -4.0%)이고 7/7은 평균 -0.32로 크게 과소예측한다.
+    #   숫자만 크게 보여주면 이 편향이 안 보이므로 함께 표시한다.
+    #   [룩어헤드 차단] 시점 t의 학습표본은 12개월 뒤 수익이 이미 나온 것(j+12<=t)뿐.
+    _perr = {}
+    try:
+        _sv = sc.values
+        _yv = fwd(idx, 12).reindex(sc.index).values
+        _pv = df[f'{idx}_종가'].reindex(sc.index).values
+        _tv = np.array([max((d - _base_dt).days / 365.25, 1e-6) for d in sc.index])
+        _acc = {}
+        for _i in range(len(_sv)):
+            _je = _i - 12
+            if _je < 120 or not np.isfinite(_sv[_i]) or not np.isfinite(_yv[_i]):
+                continue
+            _mk = np.isfinite(_sv[:_je + 1]) & np.isfinite(_yv[:_je + 1])
+            _ts, _ty = _sv[:_je + 1][_mk], _yv[:_je + 1][_mk]
+            if len(_ts) < 120 or not np.isfinite(_pv[_i]):
+                continue
+            _o = np.argsort(_ts)
+            _ys = np.asarray(_ty)[_o]
+            _n = len(_ys)
+            _w = max(int(_n * 0.20), 8)
+            _ms = [float(_ys[max(0, int((b_ + .5) / NB * _n) - _w // 2):
+                             min(_n, int((b_ + .5) / NB * _n) + _w // 2)].mean())
+                   for b_ in range(NB)]
+            _br = sum(_ms) / NB
+            _bb = int(np.clip(int((_ts < _sv[_i]).mean() * NB), 0, NB - 1))
+            _kk = _TAIL_SHRINK if (_TAIL_SHRINK is not None and _bb == NB - 1) else _SHRINK
+            _pp = (_ms[_bb] - _br) * _kk
+            if _PREM_CAP is not None:
+                _pp = float(np.clip(_pp, -_PREM_CAP, _PREM_CAP))
+            _cg = float(np.log(_pv[_i] / _base_val) / _tv[_i])
+            _acc.setdefault(_bb, []).append((_cg + _pp) - _yv[_i])
+        for _b, _es in _acc.items():
+            _e = np.asarray(_es)
+            _perr[_b] = dict(n=int(len(_e)),
+                             mae=float(np.mean(np.exp(np.abs(_e)) - 1)),
+                             bias=float(_e.mean()),
+                             over=float((_e > 0).mean()))
+    except Exception:
+        _perr = {}
+    tbl['projerr'] = _perr
 
     if cbin in projbins:
         _pc = projbins[cbin]
@@ -1014,10 +1066,17 @@ def render_forward(tbl, cbin, sc=None, ik=''):
             if eg:
                 ex = ('<div class="lad-ex">' + ' · '.join(
                     f'<b>{sp}</b> {lb}' if lb else f'<b>{sp}</b>' for sp, lb in eg) + '</div>')
+        # 과거 이 구간에서 예측이 얼마나 맞았는지. 숫자만 크게 보여주면 편향이 안 보인다.
+        pe = tbl.get('projerr', {}).get(b)
+        er = ''
+        if pe and pe['n'] >= 10:
+            _w2 = '과대' if pe['over'] >= 0.5 else '과소'
+            er = (f'<div class="lad-err">과거 {pe["n"]}개월 · 예측이 평균 '
+                  f'<b>{pe["mae"]:.0%}</b> 빗나감 · {_w2}예측 {max(pe["over"], 1-pe["over"]):.0%}</div>')
         lad += (f'<div class="lad{here}" id="lad-{ik}-{b}"><div class="lad-r"><span class="lad-b">{lab}</span>'
                 f'<span class="lad-m" style="color:{c}">{mean:+.0%}</span>'
                 f'<span class="lad-w">승률 {win:.0%}</span>'
-                f'<span class="lad-tagwrap" id="ladtag-{ik}-{b}">{tag}</span></div>{ex}</div>')
+                f'<span class="lad-tagwrap" id="ladtag-{ik}-{b}">{tag}</span></div>{er}{ex}</div>')
     return (f'<div class="headline"><div class="big" id="fbig-{ik}" style="color:{col}">{m12:+.0%}</div>'
             f'<div class="cap">향후 12개월 평균 · <span id="fcap-{ik}">상승확률 {w12:.0%}</span></div></div>'
             f'<div class="mh-row">{mh}</div>'
@@ -1065,15 +1124,27 @@ def proj_svg(a, color):
             f'{band}{bars}{pxline}{medline}{labs}</svg>{axis}')
 
 def section(label, a):
+    # 이 국면에서 과거 예측이 실제로 얼마나 맞았는지 — 숫자 옆에 붙여 과신을 막는다
+    _pe = a['tbl'].get('projerr', {}).get(a['cbin'])
+    if _pe and _pe['n'] >= 10:
+        _dir = ('실제가 예측보다 낮았던' if _pe['over'] >= 0.5 else '실제가 예측을 넘었던')
+        _rt = max(_pe['over'], 1 - _pe['over'])
+        _errtxt = (f'<b>다만 과거 이 국면에서 예측은 평균 {_pe["mae"]:.0%} 빗나갔고</b>, '
+                   f'{_pe["n"]}개월 중 {_rt:.0%}가 {_dir} 경우였습니다. '
+                   f'중간 국면은 오차가 7%대로 작지만 양 끝으로 갈수록 커집니다.')
+    else:
+        _errtxt = ''
     # 예측밴드 설명 — 축소계수가 지수마다 달라 문구도 갈린다 (근거: check_tail_cap.py)
-    _shrtxt = ('국면 프리미엄을 그대로 얹되 <b>양 끝 구간(최상위·최하위)만 절반으로 눌러</b> '
-               '추정한 범위입니다. 과거 "유리 국면"은 대개 폭락 직후 바닥이라, 그때 반등률'
-               '(+40~200%)을 이미 반등한 지수에 그대로 붙이면 과대추정됩니다 '
-               '(2009-05에 실제로 발생 — 예측 1,883 vs 실제 1,641). '
-               '평상시 정확도는 살리고 그 위험만 억제했습니다.'
+    _shrtxt = ('<b>국면 프리미엄을 축소 없이 그대로</b> 얹어 추정한 범위입니다. '
+               '한때 절반만 반영했으나, 실측에서 그 억제가 예측 강도를 2.3배 눌러 '
+               '(보정기울기 2.34) 평시 정확도를 깎고 있었습니다. 특히 최상위 국면은 '
+               '억제를 빼도 여전히 평균 -0.15만큼 과소예측합니다. '
+               '대신 최상위 국면에서 한 번(2009-05) 크게 빗나갈 위험은 커졌습니다 '
+               '— 이미 반등한 지수에 바닥 반등률을 붙이는 경우입니다.'
                if a['idx'] == 'KOSPI' else
-               '국면 프리미엄을 그대로 얹되 <b>±20%로 상한을 둬</b> 추정한 범위입니다. '
-               '과거 극단 국면의 반등률을 제한 없이 적용하면 과대추정되기 때문입니다.')
+               '국면 프리미엄을 얹되 <b>±20%로 상한을 둬</b> 추정한 범위입니다. '
+               '코스닥은 축소를 완전히 풀면 오히려 악화(지수오차 14.7%→15.6%)하고 '
+               '최상위 국면에서 과대예측하는 경향이 있어 상한을 남겼습니다.')
     rl, rc = regime(a['pct'])
     m12, w12 = a['tbl'][12][a['cbin']]
     mcol = '#3fb37f' if m12 >= 0 else '#e5484d'
@@ -1093,7 +1164,7 @@ def section(label, a):
                      f'{proj_svg(a, rc)}'
                      f'<div class="proj-cap">현재 종합점수 <span id="pjscore-{a["idx"]}">{a["cur"]:+.2f}({rl})</span>가 놓인 국면 기준, '
                      f'<b>현재가 {pj["px"]:,.0f}에서 장기추세(코스피 기준점 1980=100 이후 CAGR 약 9.5%)</b>만큼 오르는 것을 '
-                     f'중심으로, {_shrtxt} '
+                     f'중심으로, {_shrtxt} {_errtxt} '
                      f'구간(%)은 그 국면 과거 변동성 기준 신뢰구간입니다. '
                      f'예측이 아니라 과거 통계 기반 참고치이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
                      f'저성장 진입 시 과대추정될 수 있습니다.</div></div>')
@@ -2013,6 +2084,8 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 @media(max-width:760px){{.sg-rv{{display:none}}.sg-n{{min-width:82px}}}}
 .lad-r{{display:flex;align-items:center;gap:10px}}
 .lad-ex{{font-size:10.5px;color:#8b98ab;padding:3px 0 1px 62px;line-height:1.5}}
+.lad-err{{font-size:10.5px;color:#7d8da0;padding:2px 0 1px 62px;line-height:1.5}}
+.lad-err b{{color:#c48b5a;font-family:var(--mono);font-weight:600}}
 .lad-ex b{{color:#b9c4d4;font-family:var(--mono);font-weight:600}}
 .topbtns{{display:flex;gap:9px;align-items:center;flex-wrap:wrap}}
 .dbadge{{display:flex;align-items:center;gap:5px;font-size:11.5px;border-radius:8px;
