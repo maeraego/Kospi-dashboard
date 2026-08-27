@@ -1132,12 +1132,51 @@ def _proj_record(a):
     return [h for h in hist if h.get('idx') == a['idx']]
 
 
-def _proj_hist_html(rows, ik, color):
+def _proj_hist_html(rows, ik, color, idx=None):
     """예측 변화 이력 표. 직전 대비 변화와 그 원인(가격/국면)을 같이 보여준다."""
     if len(rows) < 2:
         return ('<div class="proj-cap" style="margin-top:8px">예측 이력이 아직 '
                 '1회분입니다. 다음 갱신부터 변화가 여기에 쌓입니다.</div>')
-    rows = rows[-14:]
+
+    # 실제값은 기록 시점이 아니라 '지금' 조회한다.
+    # 그래야 12개월이 지난 과거 기록들이 시간이 흐르면서 자동으로 채워진다.
+    px_s = df[f'{idx}_종가'].dropna() if idx and f'{idx}_종가' in df else None
+
+    def actual_after_12m(datestr):
+        if px_s is None:
+            return None
+        try:
+            t = pd.Timestamp(datestr) + pd.DateOffset(months=12)
+        except Exception:
+            return None
+        fut = px_s[px_s.index <= t]
+        if not len(fut) or (t - fut.index[-1]).days > 45:
+            return None                      # 아직 12개월이 안 지났다
+        return float(fut.iloc[-1])
+
+    # ── 실현 정확도 요약 (실제값이 확인된 전 구간으로 계산) ──
+    gaps, in50, in90 = [], [], []
+    for r in rows:
+        av = actual_after_12m(r['date'])
+        if av is None:
+            continue
+        gaps.append(av / r['med'] - 1)
+        in50.append(r['b50'][0] <= av <= r['b50'][1])
+        in90.append(r['b90'][0] <= av <= r['b90'][1])
+    if gaps:
+        g = np.array(gaps)
+        acc = (f'<div class="proj-cap"><b>실현 정확도</b> — 실제값이 확인된 '
+               f'{len(g)}건 기준 · 중앙 괴리 {np.median(g)*100:+.1f}% · '
+               f'평균절대 {np.abs(g).mean()*100:.1f}% · '
+               f'50% 구간 적중 <b>{np.mean(in50)*100:.0f}%</b>(이상 50) · '
+               f'90% 구간 적중 <b>{np.mean(in90)*100:.0f}%</b>(이상 90). '
+               f'적중률이 이상치에 가까울수록 밴드 폭이 잘 잡혀 있다는 뜻입니다. '
+               f'다만 대부분이 <span class="pv-recon">재구성</span> 구간이라 '
+               f'현재 모델을 과거에 적용한 결과이며, 진짜 표본외 성적은 아닙니다.</div>')
+    else:
+        acc = ''
+
+    rows = rows[-40:]
     tr = []
     for i in range(len(rows) - 1, 0, -1):
         c, p = rows[i], rows[i - 1]
@@ -1157,19 +1196,28 @@ def _proj_hist_html(rows, ik, color):
         rec = (c.get('src') or 'live') == 'recon'
         badge = ('<span class="pv-recon">재구성</span>' if rec
                  else '<span class="pv-live">기록</span>')
+        av = actual_after_12m(c['date'])
+        if av is None:
+            acol, gcol = '<span class="dim">대기</span>', '<span class="dim">-</span>'
+        else:
+            gap = (av / c['med'] - 1) * 100
+            acol = f'{av:,.0f}'
+            gcol = (f'<span class="{"up" if gap >= 0 else "dn"}">{gap:+.1f}%</span>')
         tr.append(
             f'<tr class="{"rc" if rec else ""}"><td>{c["date"]} {badge}</td>'
             f'<td>{c["px"]:,.0f}</td>'
-            f'<td><b>{c["med"]:,.0f}</b></td>'
+            f'<td>{c["b50"][0]:,.0f} ~ <b>{c["med"]:,.0f}</b> ~ {c["b50"][1]:,.0f}</td>'
             f'<td class="{cls}">{dmed:+,.0f}</td>'
-            f'<td>{c["b50"][0]:,.0f} ~ {c["b50"][1]:,.0f}</td>'
+            f'<td>{acol}</td><td>{gcol}</td>'
             f'<td>{c["score"]:+.2f} · {c["regime"]}{chg}</td>'
             f'<td class="dim">{" · ".join(why) if why else "-"}</td></tr>')
     return (f'<details class="projhist"><summary>예측 변화 이력 '
-            f'({len(rows)}회분) — 중앙값이 왜 움직였는지</summary>'
+            f'(최근 {len(rows)}회분) — 중앙값이 왜 움직였는지 · 예측 대 실제</summary>'
+            f'{acc}'
             f'<div class="rawscroll"><table class="raw kt bt"><thead><tr>'
-            f'<th>기록일</th><th>현재가</th><th>예측 중앙</th><th>전회대비</th>'
-            f'<th>50% 구간</th><th>점수 · 국면</th><th>변화 요인</th>'
+            f'<th>기록일</th><th>현재가</th><th>50% 구간 (하 ~ <b>중앙</b> ~ 상)</th>'
+            f'<th>전회대비</th><th>실제 1년후</th><th>괴리</th>'
+            f'<th>점수 · 국면</th><th>변화 요인</th>'
             f'</tr></thead><tbody>{"".join(tr)}</tbody></table></div>'
             f'<div class="proj-cap">중앙값 = 현재가 × exp(장기CAGR + 국면프리미엄). '
             f'따라서 지수가 그대로여도 <b>국면이 바뀌면 예측이 움직입니다</b>. '
@@ -1178,7 +1226,9 @@ def _proj_hist_html(rows, ik, color):
             f'<b>현재 모델로 되짚은 값</b>입니다. 가격·점수·백분위는 그 시점의 실제 값이지만 '
             f'국면프리미엄과 밴드 비율은 현재 모델 것을 빌려왔으므로, '
             f'당시 모델이 실제로 내놨을 값과는 다를 수 있습니다. '
-            f'<span class="pv-live">기록</span> 만이 실제 빌드가 남긴 값입니다.</div>'
+            f'<span class="pv-live">기록</span> 만이 실제 빌드가 남긴 값입니다.<br>'
+            f'<b>괴리</b> = (실제 1년후 지수 / 예측 중앙 − 1). 12개월이 지나야 채워지므로 '
+            f'최근 1년치는 "대기"로 표시됩니다. 양수면 예측이 낮았다는 뜻입니다.</div>'
             f'</details>')
 
 
@@ -1268,7 +1318,7 @@ def section(label, a):
                      f'구간(%)은 그 국면 과거 변동성 기준 신뢰구간입니다. '
                      f'예측이 아니라 과거 통계 기반 참고치이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
                      f'저성장 진입 시 과대추정될 수 있습니다.</div>'
-                     f'{_proj_hist_html(_proj_record(a), a["idx"], rc)}</div>')
+                     f'{_proj_hist_html(_proj_record(a), a["idx"], rc, a["idx"])}</div>')
     ik = a['idx']
     # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
     _scdist = json.dumps([round(float(v), 4) for v in a['sc'].dropna().tolist()])
