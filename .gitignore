@@ -24,5 +24,6 @@ weekly_report_log.txt
 # 공유용 산출물 (매일 재생성, 저장소에 쌓을 필요 없음)
 share/
 
-# 예측 이력 (로컬 누적, 빌드마다 갱신)
-proj_history.json
+# proj_history.json 은 일부러 추적한다.
+#   빌드마다 예측 중앙값 변화를 append 하는 파일인데, 무시하면
+#   클라우드가 매번 빈 상태로 시작해 웹에서 이력이 영원히 1회분만 보인다.
