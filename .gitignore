@@ -23,3 +23,6 @@ weekly_report_log.txt
 
 # 공유용 산출물 (매일 재생성, 저장소에 쌓을 필요 없음)
 share/
+
+# 예측 이력 (로컬 누적, 빌드마다 갱신)
+proj_history.json

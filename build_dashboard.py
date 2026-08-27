@@ -7,7 +7,8 @@ build_dashboard.py  —  WeightSum 국면 대시보드 (코스피·코스닥 분
          fred_monthly.parquet, (선택) fwd_per_monthly.parquet
 출력:    dashboard.html
 """
-import os, sys, json
+import os, sys, json, io
+from datetime import datetime
 import numpy as np, pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1082,6 +1083,93 @@ def render_forward(tbl, cbin, sc=None, ik=''):
             f'<div class="mh-row">{mh}</div>'
             f'<h2>점수 구간별 12개월 수익 ({NB}단계 · 지금 위치 강조)</h2>{lad}')
 
+PROJ_HIST = os.path.join(HERE, 'proj_history.json')
+
+
+def _proj_record(a):
+    """빌드할 때마다 예측 중앙값·밴드·국면을 기록해 변화를 추적할 수 있게 한다.
+
+    중앙값이 왜 움직였는지는 나중에 되짚기 어렵다. 현재가가 움직여서인지,
+    국면(점수)이 바뀌어서인지가 섞이기 때문이다. 그래서 둘을 분리해 남긴다.
+      base_log  = 장기 CAGR (현재가 기준점에서 자동 산출)
+      prem_log  = 국면프리미엄 (레짐이 바뀌면 이 값이 움직인다)
+    같은 날 여러 번 빌드하면 마지막 것만 남긴다.
+    """
+    pj = a['proj']
+    if not pj:
+        return []
+    try:
+        hist = json.load(io.open(PROJ_HIST, encoding='utf-8'))
+    except Exception:
+        hist = []
+    px, med = float(pj['px']), float(pj['med'])
+    yrs = (a['asof'].year - 1980) + (a['asof'].month - 1) / 12.0
+    base = float(np.log(px / 100.0) / yrs) if yrs > 0 else 0.0
+    tot = float(np.log(med / px))
+    b = pj['bands']
+    rec = {
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'asof': a['asof'].strftime('%Y-%m'),
+        'idx': a['idx'],
+        'px': round(px, 2), 'med': round(med, 2),
+        'score': round(float(a['cur']), 3), 'pct': round(float(a['pct']), 4),
+        'regime': regime(a['pct'])[0],
+        'base_log': round(base, 5), 'prem_log': round(tot - base, 5),
+        'b50': [round(float(b[50][0]), 2), round(float(b[50][1]), 2)],
+        'b90': [round(float(b[90][0]), 2), round(float(b[90][1]), 2)],
+    }
+    hist = [h for h in hist
+            if not (h.get('date') == rec['date'] and h.get('idx') == rec['idx'])]
+    hist.append(rec)
+    hist.sort(key=lambda h: (h.get('date', ''), h.get('idx', '')))
+    hist = hist[-800:]                      # 지수 2개 × 400회분이면 충분
+    try:
+        io.open(PROJ_HIST, 'w', encoding='utf-8').write(
+            json.dumps(hist, ensure_ascii=False, indent=1))
+    except Exception as e:
+        print(f'  ! 예측 히스토리 저장 실패: {e}')
+    return [h for h in hist if h.get('idx') == a['idx']]
+
+
+def _proj_hist_html(rows, ik, color):
+    """예측 변화 이력 표. 직전 대비 변화와 그 원인(가격/국면)을 같이 보여준다."""
+    if len(rows) < 2:
+        return ('<div class="proj-cap" style="margin-top:8px">예측 이력이 아직 '
+                '1회분입니다. 다음 갱신부터 변화가 여기에 쌓입니다.</div>')
+    rows = rows[-14:]
+    tr = []
+    for i in range(len(rows) - 1, 0, -1):
+        c, p = rows[i], rows[i - 1]
+        dmed = c['med'] - p['med']
+        dpx = c['px'] - p['px']
+        dprem = (c['prem_log'] - p['prem_log']) * 100
+        # 중앙값 변화를 '가격이 움직인 몫'과 '국면이 움직인 몫'으로 쪼갠다
+        why = []
+        if abs(dpx) > 0.5:
+            why.append(f'현재가 {dpx:+,.0f}')
+        if abs(dprem) > 0.05:
+            why.append(f'국면 {dprem:+.1f}%p')
+        cls = 'up' if dmed >= 0 else 'dn'
+        chg = '' if c['regime'] == p['regime'] else f' <b>{p["regime"]}→{c["regime"]}</b>'
+        tr.append(
+            f'<tr><td>{c["date"]}</td><td>{c["px"]:,.0f}</td>'
+            f'<td><b>{c["med"]:,.0f}</b></td>'
+            f'<td class="{cls}">{dmed:+,.0f}</td>'
+            f'<td>{c["b50"][0]:,.0f} ~ {c["b50"][1]:,.0f}</td>'
+            f'<td>{c["score"]:+.2f} · {c["regime"]}{chg}</td>'
+            f'<td class="dim">{" · ".join(why) if why else "-"}</td></tr>')
+    return (f'<details class="projhist"><summary>예측 변화 이력 '
+            f'({len(rows)}회분) — 중앙값이 왜 움직였는지</summary>'
+            f'<div class="rawscroll"><table class="raw kt bt"><thead><tr>'
+            f'<th>기록일</th><th>현재가</th><th>예측 중앙</th><th>전회대비</th>'
+            f'<th>50% 구간</th><th>점수 · 국면</th><th>변화 요인</th>'
+            f'</tr></thead><tbody>{"".join(tr)}</tbody></table></div>'
+            f'<div class="proj-cap">중앙값 = 현재가 × exp(장기CAGR + 국면프리미엄). '
+            f'따라서 지수가 그대로여도 <b>국면이 바뀌면 예측이 움직입니다</b>. '
+            f'"변화 요인"은 그 둘 중 무엇이 움직였는지를 나눠 표시한 것입니다.</div>'
+            f'</details>')
+
+
 def proj_svg(a, color):
     pj = a['proj']
     if not pj: return ''
@@ -1167,7 +1255,8 @@ def section(label, a):
                      f'중심으로, {_shrtxt} {_errtxt} '
                      f'구간(%)은 그 국면 과거 변동성 기준 신뢰구간입니다. '
                      f'예측이 아니라 과거 통계 기반 참고치이며, "미래에도 과거만큼 오른다"는 가정이 깔려 있어 '
-                     f'저성장 진입 시 과대추정될 수 있습니다.</div></div>')
+                     f'저성장 진입 시 과대추정될 수 있습니다.</div>'
+                     f'{_proj_hist_html(_proj_record(a), a["idx"], rc)}</div>')
     ik = a['idx']
     # 종합점수 분포(과거 전체)를 JS에 넘겨 체크박스로 재계산 시 백분위를 다시 구한다
     _scdist = json.dumps([round(float(v), 4) for v in a['sc'].dropna().tolist()])
@@ -2053,6 +2142,12 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .proj-sel{{background:#0f1626;color:#b9c4d4;border:1px solid var(--line);border-radius:5px;font-size:11px;padding:1px 4px;font-family:var(--mono);cursor:pointer;margin-left:4px}}
 .proj-med{{color:#b9c4d4;font-family:var(--mono);font-size:12px}}
 .proj-cap{{font-size:10.5px;color:#8b98ab;margin-top:5px;line-height:1.5}}
+.projhist{{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}}
+.projhist>summary{{cursor:pointer;font-size:12px;color:#9aa4b2;padding:4px 0}}
+.projhist>summary:hover{{color:#e6e6e6}}
+.projhist td.up{{color:#3fb37f}}
+.projhist td.dn{{color:#e5484d}}
+.projhist td.dim{{color:#6b7280;font-size:11px}}
 .expbar{{display:flex;align-items:baseline;gap:14px;background:#131b2a;border:1px solid var(--line);
   border-radius:10px;padding:9px 14px;margin-bottom:12px;flex-wrap:wrap}}
 .exp-lab{{font-size:11.5px;color:var(--mut)}}
