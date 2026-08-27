@@ -1086,6 +1086,38 @@ def render_forward(tbl, cbin, sc=None, ik=''):
 PROJ_HIST = os.path.join(HERE, 'proj_history.json')
 
 
+def _contrib_frame(a):
+    """신호별 점수 기여도(방향보정 z × 가중치)를 월별로 만든다.
+
+    종합점수는 이들의 합이다. 따라서 두 시점의 기여도를 빼면
+    '이번에 점수를 움직인 게 무엇인지'가 바로 나온다.
+    예측 중앙값·밴드가 왜 변했는지 설명하는 근거로 쓴다.
+    """
+    w, dr = a['w'], a['direction']
+    out = {}
+    for item in signals_for(a['idx']):
+        nm, raw = item[0], item[1]
+        if raw is None or not w.get(nm):
+            continue            # 가중 0(REF_ONLY)은 점수에 영향이 없으니 제외
+        try:
+            z = ez(pd.Series(raw).astype(float)) * dr[nm][0] * w[nm]
+        except Exception:
+            continue
+        out[nm] = z
+    return pd.DataFrame(out) if out else pd.DataFrame()
+
+
+def _top_contrib(frame, t, k=10):
+    """시점 t의 기여도 상위 k개를 dict로. 이력 파일에 함께 저장한다."""
+    if frame.empty or t not in frame.index:
+        return {}
+    row = frame.loc[t].dropna()
+    if row.empty:
+        return {}
+    row = row.reindex(row.abs().sort_values(ascending=False).index)[:k]
+    return {str(i): round(float(v), 4) for i, v in row.items()}
+
+
 def _proj_record(a):
     """빌드할 때마다 예측 중앙값·밴드·국면을 기록해 변화를 추적할 수 있게 한다.
 
@@ -1119,6 +1151,12 @@ def _proj_record(a):
         'b50': [round(float(b[50][0]), 2), round(float(b[50][1]), 2)],
         'b90': [round(float(b[90][0]), 2), round(float(b[90][1]), 2)],
     }
+    try:
+        _cf = _contrib_frame(a)
+        if not _cf.empty:
+            rec['contrib'] = _top_contrib(_cf, _cf.dropna(how='all').index[-1])
+    except Exception:
+        pass
     hist = [h for h in hist
             if not (h.get('date') == rec['date'] and h.get('idx') == rec['idx'])]
     hist.append(rec)
@@ -1190,6 +1228,16 @@ def _proj_hist_html(rows, ik, color, idx=None):
             why.append(f'현재가 {dpx:+,.0f}')
         if abs(dprem) > 0.05:
             why.append(f'국면 {dprem:+.1f}%p')
+        # 국면을 움직인 게 어느 신호인지까지 풀어 쓴다.
+        # 기여도 = 방향보정 z × 가중치. 두 시점 차이가 큰 순으로 최대 3개.
+        cc, pc = c.get('contrib') or {}, p.get('contrib') or {}
+        if cc and pc:
+            dif = {k: cc.get(k, 0) - pc.get(k, 0) for k in set(cc) | set(pc)}
+            top = sorted(dif.items(), key=lambda x: -abs(x[1]))[:3]
+            det = [f'{k} {"↑" if v > 0 else "↓"}{abs(v):.2f}'
+                   for k, v in top if abs(v) >= 0.02]
+            if det:
+                why.append('<span class="sigwhy">' + ' · '.join(det) + '</span>')
         cls = 'up' if dmed >= 0 else 'dn'
         chg = '' if c['regime'] == p['regime'] else f' <b>{p["regime"]}→{c["regime"]}</b>'
         # 실제 빌드 기록과 과거 재구성분을 반드시 구분해 보여준다.
@@ -1215,8 +1263,17 @@ def _proj_hist_html(rows, ik, color, idx=None):
                     f'{"상향" if dmed >= 0 else "하향"} · 폭 유지 {w_c*100:.0f}%')
         else:
             tag = '확대' if dw > 0 else '축소'
-            src = (f'국면 {p["regime"]}→{c["regime"]}' if c['regime'] != p['regime']
-                   else '국면 내 변동성 재추정')
+            if c['regime'] != p['regime']:
+                # 국면을 바꾼 주도 신호를 함께 적는다
+                lead = ''
+                if cc and pc:
+                    d2 = {k: cc.get(k, 0) - pc.get(k, 0) for k in set(cc) | set(pc)}
+                    b2 = sorted(d2.items(), key=lambda x: -abs(x[1]))[:2]
+                    b2 = [f'{k}{"↑" if v > 0 else "↓"}' for k, v in b2 if abs(v) >= 0.02]
+                    lead = (' ← ' + ' '.join(b2)) if b2 else ''
+                src = f'국면 {p["regime"]}→{c["regime"]}{lead}'
+            else:
+                src = '국면 내 변동성 재추정'
             bwhy = (f'<span class="{"dn" if dw > 0 else "up"}">폭 {tag} {dw:+.0f}%</span> '
                     f'<span class="dim">({src} · {w_p*100:.0f}%→{w_c*100:.0f}%)</span>')
 
@@ -1257,7 +1314,16 @@ def _proj_hist_html(rows, ik, color, idx=None):
             f'<b>구간 변화 사유</b> — 밴드는 두 가지로 움직입니다. '
             f'<b>평행이동</b>은 폭은 그대로인데 중앙값이 끌고 간 경우(가격/국면이 중앙을 민 것)이고, '
             f'<b>폭 확대·축소</b>는 국면이 바뀌어 그 국면의 과거 변동성 추정 자체가 달라진 경우입니다. '
-            f'괄호 안 %는 상대폭 (상−하)÷중앙 입니다. 폭이 넓어지면 그만큼 불확실성이 커졌다는 뜻입니다.</div>'
+            f'괄호 안 %는 상대폭 (상−하)÷중앙 입니다.<br>'
+            f'<b>평행이동</b>이 생기는 이유 — 예측 중앙 = <b>현재가</b> × exp(장기CAGR + 국면프리미엄) 이라 '
+            f'출발점이 현재 지수입니다. 국면이 그대로면 밴드 비율도 그대로여서, '
+            f'지수가 움직인 만큼 밴드가 통째로 따라 움직입니다.<br>'
+            f'<b>폭</b>은 그 국면의 <b>과거 12개월 수익이 얼마나 흩어졌는가</b>(로버스트 표준편차)입니다. '
+            f'현재 코스피 기준 상대폭은 중앙 국면 9.6%로 가장 좁고 최하위 41.1% · 최상위 35.1%로 양 끝이 넓습니다. '
+            f'극단 국면은 폭락 바닥이나 과열 고점이라 이후 1년 결과가 크게 갈렸고, 중립은 몰려 있었기 때문입니다. '
+            f'그래서 국면이 바뀌면 폭이 함께 바뀝니다.<br>'
+            f'화살표(신호명 ↑↓ 숫자)는 <b>점수를 움직인 신호</b>입니다. '
+            f'기여도 = 강세방향 z × 가중치이고, 직전 회차와의 차이가 큰 순으로 최대 3개를 표시합니다.</div>'
             f'</details>')
 
 
@@ -2240,6 +2306,7 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .projhist td.dn{{color:#e5484d}}
 .projhist td.dim{{color:#6b7280;font-size:11px}}
 .projhist td.bw{{font-size:11px;white-space:nowrap}}
+.projhist .sigwhy{{color:#9aa4b2}}
 .projhist tr.rc{{opacity:.72}}
 .projhist .rawscroll{{max-height:420px;overflow:auto}}
 .projhist thead th{{position:sticky;top:0;background:#131b2a;z-index:1}}

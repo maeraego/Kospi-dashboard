@@ -45,6 +45,7 @@ def recon(ix, months):
         prem[b] = float(np.log(m / px_now) - cagr_now)
         ratio[b] = {k: [float(x) / m for x in v['bands'][k]] for k in (50, 90)}
 
+    cf = bd._contrib_frame(a)          # 신호별 기여도(방향보정 z × 가중치)
     sc = a['sc'].dropna()
     px = bd.df[f'{ix}_종가'].dropna()
     # 진행 중인 당월은 제외한다. 월말 날짜(예: 2026-08-31)로 기록되어
@@ -74,6 +75,7 @@ def recon(ix, months):
             'base_log': round(base, 5), 'prem_log': round(prem[b], 5),
             'b50': [round(med * ratio[b][50][0], 2), round(med * ratio[b][50][1], 2)],
             'b90': [round(med * ratio[b][90][0], 2), round(med * ratio[b][90][1], 2)],
+            'contrib': bd._top_contrib(cf, t),
         })
     return out
 
