@@ -1197,6 +1197,29 @@ def _proj_hist_html(rows, ik, color, idx=None):
         rec = (c.get('src') or 'live') == 'recon'
         badge = ('<span class="pv-recon">재구성</span>' if rec
                  else '<span class="pv-live">기록</span>')
+        # ── 구간(하~중앙~상) 변화 사유 ──
+        #   밴드는 두 가지로 움직인다.
+        #     (1) 중앙값을 따라 통째로 평행이동  -> 가격/국면이 중앙을 밀어서
+        #     (2) 폭 자체가 넓어지거나 좁아짐    -> 국면이 바뀌어 변동성 추정이 달라져서
+        #   상대폭 = (상 − 하) / 중앙 을 비교하면 (2)만 따로 뽑을 수 있다.
+        def relw(r):
+            return (r['b50'][1] - r['b50'][0]) / r['med'] if r['med'] else 0.0
+        w_c, w_p = relw(c), relw(p)
+        dw = (w_c / w_p - 1) * 100 if w_p else 0.0
+        dlo, dhi = c['b50'][0] - p['b50'][0], c['b50'][1] - p['b50'][1]
+        if abs(dlo) < 0.5 and abs(dhi) < 0.5:
+            bwhy = '<span class="dim">변화 없음</span>'
+        elif abs(dw) < 1.0:
+            # 폭은 그대로 -> 중앙값이 끌고 간 평행이동
+            bwhy = (f'<span class="dim">평행이동</span> '
+                    f'{"상향" if dmed >= 0 else "하향"} · 폭 유지 {w_c*100:.0f}%')
+        else:
+            tag = '확대' if dw > 0 else '축소'
+            src = (f'국면 {p["regime"]}→{c["regime"]}' if c['regime'] != p['regime']
+                   else '국면 내 변동성 재추정')
+            bwhy = (f'<span class="{"dn" if dw > 0 else "up"}">폭 {tag} {dw:+.0f}%</span> '
+                    f'<span class="dim">({src} · {w_p*100:.0f}%→{w_c*100:.0f}%)</span>')
+
         av = actual_after_12m(c['date'])
         if av is None:
             acol, gcol = '<span class="dim">대기</span>', '<span class="dim">-</span>'
@@ -1211,14 +1234,15 @@ def _proj_hist_html(rows, ik, color, idx=None):
             f'<td class="{cls}">{dmed:+,.0f}</td>'
             f'<td>{acol}</td><td>{gcol}</td>'
             f'<td>{c["score"]:+.2f} · {c["regime"]}{chg}</td>'
-            f'<td class="dim">{" · ".join(why) if why else "-"}</td></tr>')
+            f'<td class="dim">{" · ".join(why) if why else "-"}</td>'
+            f'<td class="bw">{bwhy}</td></tr>')
     return (f'<details class="projhist"><summary>예측 변화 이력 '
             f'({len(rows)}회분, {rows[0]["date"][:7]}~{rows[-1]["date"][:7]}) — 중앙값이 왜 움직였는지 · 예측 대 실제</summary>'
             f'{acc}'
             f'<div class="rawscroll"><table class="raw kt bt"><thead><tr>'
             f'<th>기록일</th><th>현재가</th><th>50% 구간 (하 ~ <b>중앙</b> ~ 상)</th>'
             f'<th>전회대비</th><th>실제 1년후</th><th>괴리</th>'
-            f'<th>점수 · 국면</th><th>변화 요인</th>'
+            f'<th>점수 · 국면</th><th>중앙값 변화 요인</th><th>구간 변화 사유</th>'
             f'</tr></thead><tbody>{"".join(tr)}</tbody></table></div>'
             f'<div class="proj-cap">중앙값 = 현재가 × exp(장기CAGR + 국면프리미엄). '
             f'따라서 지수가 그대로여도 <b>국면이 바뀌면 예측이 움직입니다</b>. '
@@ -1229,7 +1253,11 @@ def _proj_hist_html(rows, ik, color, idx=None):
             f'당시 모델이 실제로 내놨을 값과는 다를 수 있습니다. '
             f'<span class="pv-live">기록</span> 만이 실제 빌드가 남긴 값입니다.<br>'
             f'<b>괴리</b> = (실제 1년후 지수 / 예측 중앙 − 1). 12개월이 지나야 채워지므로 '
-            f'최근 1년치는 "대기"로 표시됩니다. 양수면 예측이 낮았다는 뜻입니다.</div>'
+            f'최근 1년치는 "대기"로 표시됩니다. 양수면 예측이 낮았다는 뜻입니다.<br>'
+            f'<b>구간 변화 사유</b> — 밴드는 두 가지로 움직입니다. '
+            f'<b>평행이동</b>은 폭은 그대로인데 중앙값이 끌고 간 경우(가격/국면이 중앙을 민 것)이고, '
+            f'<b>폭 확대·축소</b>는 국면이 바뀌어 그 국면의 과거 변동성 추정 자체가 달라진 경우입니다. '
+            f'괄호 안 %는 상대폭 (상−하)÷중앙 입니다. 폭이 넓어지면 그만큼 불확실성이 커졌다는 뜻입니다.</div>'
             f'</details>')
 
 
@@ -2211,6 +2239,7 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .projhist td.up{{color:#3fb37f}}
 .projhist td.dn{{color:#e5484d}}
 .projhist td.dim{{color:#6b7280;font-size:11px}}
+.projhist td.bw{{font-size:11px;white-space:nowrap}}
 .projhist tr.rc{{opacity:.72}}
 .projhist .rawscroll{{max-height:420px;overflow:auto}}
 .projhist thead th{{position:sticky;top:0;background:#131b2a;z-index:1}}
