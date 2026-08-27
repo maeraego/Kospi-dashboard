@@ -1176,7 +1176,8 @@ def _proj_hist_html(rows, ik, color, idx=None):
     else:
         acc = ''
 
-    rows = rows[-40:]
+    # 자르지 않는다. 10년치를 넣어놓고 40행만 보여주면 데이터가 없는 것처럼 보인다.
+    # 길이는 아래 rawscroll 컨테이너가 스크롤로 감당한다.
     tr = []
     for i in range(len(rows) - 1, 0, -1):
         c, p = rows[i], rows[i - 1]
@@ -1212,7 +1213,7 @@ def _proj_hist_html(rows, ik, color, idx=None):
             f'<td>{c["score"]:+.2f} · {c["regime"]}{chg}</td>'
             f'<td class="dim">{" · ".join(why) if why else "-"}</td></tr>')
     return (f'<details class="projhist"><summary>예측 변화 이력 '
-            f'(최근 {len(rows)}회분) — 중앙값이 왜 움직였는지 · 예측 대 실제</summary>'
+            f'({len(rows)}회분, {rows[0]["date"][:7]}~{rows[-1]["date"][:7]}) — 중앙값이 왜 움직였는지 · 예측 대 실제</summary>'
             f'{acc}'
             f'<div class="rawscroll"><table class="raw kt bt"><thead><tr>'
             f'<th>기록일</th><th>현재가</th><th>50% 구간 (하 ~ <b>중앙</b> ~ 상)</th>'
@@ -2211,6 +2212,8 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .projhist td.dn{{color:#e5484d}}
 .projhist td.dim{{color:#6b7280;font-size:11px}}
 .projhist tr.rc{{opacity:.72}}
+.projhist .rawscroll{{max-height:420px;overflow:auto}}
+.projhist thead th{{position:sticky;top:0;background:#131b2a;z-index:1}}
 .pv-recon{{font-size:9.5px;color:#8b5cf6;border:1px solid #8b5cf6;border-radius:3px;padding:0 3px;margin-left:4px}}
 .pv-live{{font-size:9.5px;color:#3fb37f;border:1px solid #3fb37f;border-radius:3px;padding:0 3px;margin-left:4px}}
 .expbar{{display:flex;align-items:baseline;gap:14px;background:#131b2a;border:1px solid var(--line);
