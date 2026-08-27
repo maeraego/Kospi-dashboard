@@ -1109,6 +1109,7 @@ def _proj_record(a):
     b = pj['bands']
     rec = {
         'date': datetime.now().strftime('%Y-%m-%d'),
+        'src': 'live',                  # 실제 빌드 산물. 'recon' 은 재구성분.
         'asof': a['asof'].strftime('%Y-%m'),
         'idx': a['idx'],
         'px': round(px, 2), 'med': round(med, 2),
@@ -1151,8 +1152,14 @@ def _proj_hist_html(rows, ik, color):
             why.append(f'국면 {dprem:+.1f}%p')
         cls = 'up' if dmed >= 0 else 'dn'
         chg = '' if c['regime'] == p['regime'] else f' <b>{p["regime"]}→{c["regime"]}</b>'
+        # 실제 빌드 기록과 과거 재구성분을 반드시 구분해 보여준다.
+        # 섞이면 모니터링 로그로서 신뢰를 잃는다.
+        rec = (c.get('src') or 'live') == 'recon'
+        badge = ('<span class="pv-recon">재구성</span>' if rec
+                 else '<span class="pv-live">기록</span>')
         tr.append(
-            f'<tr><td>{c["date"]}</td><td>{c["px"]:,.0f}</td>'
+            f'<tr class="{"rc" if rec else ""}"><td>{c["date"]} {badge}</td>'
+            f'<td>{c["px"]:,.0f}</td>'
             f'<td><b>{c["med"]:,.0f}</b></td>'
             f'<td class="{cls}">{dmed:+,.0f}</td>'
             f'<td>{c["b50"][0]:,.0f} ~ {c["b50"][1]:,.0f}</td>'
@@ -1166,7 +1173,12 @@ def _proj_hist_html(rows, ik, color):
             f'</tr></thead><tbody>{"".join(tr)}</tbody></table></div>'
             f'<div class="proj-cap">중앙값 = 현재가 × exp(장기CAGR + 국면프리미엄). '
             f'따라서 지수가 그대로여도 <b>국면이 바뀌면 예측이 움직입니다</b>. '
-            f'"변화 요인"은 그 둘 중 무엇이 움직였는지를 나눠 표시한 것입니다.</div>'
+            f'"변화 요인"은 그 둘 중 무엇이 움직였는지를 나눠 표시한 것입니다.<br>'
+            f'<span class="pv-recon">재구성</span> 은 이 기능 도입 이전 구간을 '
+            f'<b>현재 모델로 되짚은 값</b>입니다. 가격·점수·백분위는 그 시점의 실제 값이지만 '
+            f'국면프리미엄과 밴드 비율은 현재 모델 것을 빌려왔으므로, '
+            f'당시 모델이 실제로 내놨을 값과는 다를 수 있습니다. '
+            f'<span class="pv-live">기록</span> 만이 실제 빌드가 남긴 값입니다.</div>'
             f'</details>')
 
 
@@ -2148,6 +2160,9 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .projhist td.up{{color:#3fb37f}}
 .projhist td.dn{{color:#e5484d}}
 .projhist td.dim{{color:#6b7280;font-size:11px}}
+.projhist tr.rc{{opacity:.72}}
+.pv-recon{{font-size:9.5px;color:#8b5cf6;border:1px solid #8b5cf6;border-radius:3px;padding:0 3px;margin-left:4px}}
+.pv-live{{font-size:9.5px;color:#3fb37f;border:1px solid #3fb37f;border-radius:3px;padding:0 3px;margin-left:4px}}
 .expbar{{display:flex;align-items:baseline;gap:14px;background:#131b2a;border:1px solid var(--line);
   border-radius:10px;padding:9px 14px;margin-bottom:12px;flex-wrap:wrap}}
 .exp-lab{{font-size:11.5px;color:var(--mut)}}
