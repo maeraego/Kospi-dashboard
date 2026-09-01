@@ -113,7 +113,12 @@ jobs:
         run: |
           git config user.name  "dashboard-bot"
           git config user.email "actions@github.com"
-          git add -A docs/index.html docs/season.html proj_history.json *.parquet *.csv 2>/dev/null || true
+          # proj_history.json 은 일부러 뺀다.
+          #   로컬(집 PC)과 클라우드가 같은 JSON 에 append 하면 git 이 자동 병합을
+          #   못 해 매번 충돌한다(2026-09-01 확인). 쓰는 쪽을 하나로 둔다.
+          #   데이터를 수집하는 집 PC 가 유일한 기록자이고, 클라우드는 읽어서 그릴 뿐이다.
+          #   클라우드 빌드도 파일에 쓰긴 하지만 커밋하지 않으므로 다음 체크아웃에서 사라진다.
+          git add -A docs/index.html docs/season.html *.parquet *.csv 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "변경 없음"
           else
