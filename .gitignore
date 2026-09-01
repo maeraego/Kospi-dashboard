@@ -27,3 +27,8 @@ share/
 # proj_history.json 은 일부러 추적한다.
 #   빌드마다 예측 중앙값 변화를 append 하는 파일인데, 무시하면
 #   클라우드가 매번 빈 상태로 시작해 웹에서 이력이 영원히 1회분만 보인다.
+
+# 실행 로그 - 배치가 실행 중에 append 하는 파일이라 추적하면 안 된다.
+# git 이 checkout 하려 할 때 파일이 열려 있어 unlink 실패 -> read-tree failed 로
+# pull 이 중간에 깨지고 parquet 이 되돌아간다 (2026-09-01 사고).
+auto_update_log.txt
