@@ -2315,6 +2315,15 @@ if HAS_CREDIT and '신용융자/예탁금' in DATA['ic']:
     DATA['ic']['신용융자/예탁금']['fromWhy'] = (
         '2007년 신용공여 제도 급성장 (신용융자 2006년 0.47조 → 2007년 4.40조, 9.4배). '
         '이전 구간은 사실상 다른 시장이라 신호 계산에서 제외 — 차트에는 맥락으로 남김.')
+# 각 시리즈의 마지막 유효월 — 원자료 표에서 '미발표'와 '결측'을 구분하는 데 쓴다.
+#   빈칸만 보여주면 수집 고장인지 아직 발표 전인지 알 수 없다.
+#   실제로 2026-09 기준 12개 컬럼이 비어 있었는데 원천(ECOS/FRED)을 직접 조회한
+#   결과 전부 원천 최신값과 일치했다. 즉 버그가 아니라 아직 없는 숫자다.
+DATA['lastvalid'] = {}
+for _k, _v in DATA['series'].items():
+    _ix = [_i for _i, _x in enumerate(_v) if _x is not None]
+    if _ix:
+        DATA['lastvalid'][_k] = _ix[-1]
 DATA['scoremeta'] = {'method': '각 지표를 강세방향 z-score로 변환 → 예측력(IC) 기반 Ridge 다변량 가중합. 양수=유리, 음수=불리.'}
 # 드롭다운 순서 = 신호 분해의 번호 순서(가중치 큰 순)와 일치시킴
 SIG2COL = {'PBR': 'PBR', 'PER': 'PER', 'ROE': 'ROE', '실현변동성(20일)': '실현변동성(20일)', 'VKOSPI': 'VKOSPI',
@@ -2398,6 +2407,8 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .stalebox{{background:#1b1a12;border:1px solid #4a4326;border-radius:8px;
   padding:8px 11px;margin-bottom:10px;font-size:11.5px;color:#d9c98a;line-height:1.6}}
 .stalebox .dim{{color:#8b8468;font-size:10.5px}}
+.raw td.napub{{color:#5c6675;font-size:10px;font-style:italic}}
+.raw .lagtag{{color:#d9a441;font-size:9px;margin-left:3px}}
 .projhist tr.rc{{opacity:.72}}
 .projhist .rawscroll{{max-height:420px;overflow:auto}}
 .projhist thead th{{position:sticky;top:0;background:#131b2a;z-index:1}}
@@ -3038,9 +3049,18 @@ function toggleRaw(){{const w=document.getElementById('rawWrap');
   const show=w.style.display==='none';w.style.display=show?'block':'none';
   if(show&&!rawBuilt){{buildRaw();rawBuilt=true;}}}}
 function buildRaw(){{const cols=Object.keys(S);
-  let h='<table class="raw"><thead><tr><th>월</th>'+cols.map(c=>`<th>${{c}}</th>`).join('')+'</tr></thead><tbody>';
+  const LV=(DATA.lastvalid||{{}});
+  // 헤더에 지연 개월수를 붙인다. 표를 열자마자 어느 지표가 늦는지 보이게.
+  const head=cols.map(c=>{{const li=LV[c];
+    const lag=(li==null)?0:(D.length-1-li);
+    return `<th>${{c}}${{lag>=1?`<span class="lagtag">-${{lag}}m</span>`:''}}</th>`;}}).join('');
+  let h='<table class="raw"><thead><tr><th>월</th>'+head+'</tr></thead><tbody>';
   for(let i=D.length-1;i>=0;i--){{h+=`<tr><td>${{D[i]}}</td>`+cols.map(c=>{{const v=S[c][i];
-    return `<td>${{v==null?'':(Math.abs(v)>=1000?Math.round(v).toLocaleString():v)}}</td>`;}}).join('')+'</tr>';}}
+    if(v!=null) return `<td>${{Math.abs(v)>=1000?Math.round(v).toLocaleString():v}}</td>`;
+    // 마지막 유효월보다 뒤면 '아직 발표 전', 앞이면 원래 결측
+    const li=LV[c];
+    if(li!=null&&i>li) return '<td class="napub" title="아직 공표되지 않은 구간입니다">미발표</td>';
+    return '<td></td>';}}).join('')+'</tr>';}}
   document.getElementById('rawTable').innerHTML=h+'</tbody></table>';}}
 function downloadCSV(){{const cols=Object.keys(S);
   let csv='월,'+cols.join(',')+'\\n';
