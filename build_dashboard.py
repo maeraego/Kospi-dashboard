@@ -357,7 +357,51 @@ def signals_for(idx):
         #    시리즈는 comp 딕셔너리가 따로 들고 있고, 백분위는 절단 후 기준이 맞다.)
         sig.append(('신용융자/예탁금', df['신용융자/예탁금'].where(df.index >= CREDIT_FROM),
                     -1, FMT_2, ('레버리지 과열', '청산 완료')))
-    return sig
+    return _apply_pub_lag(sig)
+
+
+# ── 발표시차 (개월) ──────────────────────────────────────────────
+#   월간 지표는 '참조월' 기준으로 저장되지만 실제 공표는 그보다 늦다.
+#   예) 2026-07 경기선행지수는 2026-09 하순에 발표된다. 보정하지 않으면
+#   2026-07 시점에 그 값을 이미 알고 있던 것처럼 계산돼 룩어헤드가 된다.
+#   신용융자는 이미 shift(1)로 처리돼 있고(수집부), 여기서는 월간 매크로를 다룬다.
+#
+#   [실측] 2015년 분할 표본외 IC — 시차를 주면 오히려 좋아진다.
+#     현행           코스피 +0.7689 / 코스닥 +0.6440
+#     경기선행만 +2   코스피 +0.7946 / 코스닥 +0.6846
+#     예상PER계열 +2  코스피 +0.7998 / 코스닥 (미사용)
+#     둘 다          코스피 +0.8189 / 코스닥 +0.6846
+#   즉 룩어헤드가 성적을 부풀린 게 아니라 오히려 깎고 있었다.
+#   시차 부여는 '더 오래된 값을 쓰는' 보수적 방향이라 새 룩어헤드를 만들지 않는다.
+#
+#   주의: 예상PER 계열은 update_fwd_per.py 로 수동 입력하는 값이라
+#   공표시차라기보다 입력 주기에 가깝다. 개선폭이 뚜렷하고 방향이 보수적이라
+#   함께 적용하되, 입력 시점을 앞당기면 이 값도 재검토해야 한다.
+PUB_LAG = {
+    '경기선행지수': 2,        # 통계청 경기종합지수, 약 2개월 시차
+    '예상PER 괴리': 2,
+    '선행 PBR': 2,
+    '일드갭 (예상PER)': 2,
+    '수출 YoY': 2,           # REF_ONLY 지만 차트 정합을 위해 함께
+    'M2 증가율(YoY)': 3,     # 한국은행 통화량, 약 3개월 시차
+    'M2/M1 비율': 3,
+    '채산성(CPI-PPI)': 2,    # PPI 가 늦어 조합 결과가 2개월 시차
+}
+
+
+def _apply_pub_lag(sig):
+    """발표시차만큼 신호를 뒤로 민다. 시점 t 에서는 t-lag 의 값만 알 수 있다."""
+    out = []
+    for item in sig:
+        nm, raw = item[0], item[1]
+        k = PUB_LAG.get(nm)
+        if k and raw is not None:
+            try:
+                raw = pd.Series(raw).astype(float).shift(k)
+            except Exception:
+                pass
+        out.append((nm, raw) + tuple(item[2:]))
+    return out
 
 def _downside_sd(r, mu=None, ddof=1):
     """하방 반편차 - 평균 아래로 벗어난 값만으로 계산한 표준편차.
@@ -1397,7 +1441,48 @@ def section(label, a):
     proj_html = ''
     if pj:
         _b50 = pj['bands'][50]
-        proj_html = (f'<div class="projbox"><div class="proj-h">'
+        # ── 신선도 경고: 몇 개월 전 값으로 계산 중인 신호를 밝힌다 ──
+    #   발표시차(PUB_LAG)와 ffill(limit=3) 때문에 최신 월 점수가 과거 값에
+    #   기대고 있을 수 있다. 어느 신호가 얼마나 묵은 값인지 숨기지 않는다.
+    _stale = []
+    for _it in signals_for(a['idx']):
+        _nm, _raw = _it[0], _it[1]
+        _wt = a['w'].get(_nm, 0.0)
+        if _wt <= 0 or _raw is None:
+            continue
+        try:
+            _sv = pd.Series(_raw).astype(float).dropna()
+        except Exception:
+            continue
+        if not len(_sv):
+            continue
+        # signals_for 는 이미 발표시차만큼 민 시리즈를 준다. 그래서 이 시리즈의
+        # 끝만 보면 gap 이 0으로 보인다. 실제로 '몇 개월 전 값'인지는
+        #   발표시차 + (그 뒤로도 값이 끊긴 개월수)
+        # 로 계산해야 한다.
+        _lag = PUB_LAG.get(_nm, 0)
+        _tail = ((a['asof'].year - _sv.index[-1].year) * 12
+                 + a['asof'].month - _sv.index[-1].month)
+        _gap = _lag + max(0, _tail)
+        if _gap >= 1:
+            _src = (a['asof'] - pd.DateOffset(months=_gap)).strftime('%Y-%m')
+            _stale.append((_nm, _wt, _gap, _src))
+    _stale.sort(key=lambda x: -x[1])
+    if _stale:
+        _sw = sum(x[1] for x in _stale)
+        _lst = ' · '.join(f'{n_} {w_*100:.0f}% <b>{g_}개월 전</b>({m_})'
+                          for n_, w_, g_, m_ in _stale[:4])
+        _stale_html = (
+            f'<div class="stalebox">⏳ <b>점수의 {_sw*100:.0f}%</b>가 지난 달 이전 '
+            f'값으로 계산됩니다 — {_lst}'
+            f'{" 외 %d개" % (len(_stale) - 4) if len(_stale) > 4 else ""}<br>'
+            f'<span class="dim">매크로 지표는 공표까지 1~3개월 걸립니다. '
+            f'그 시차만큼 뒤로 밀어 계산하므로 미래 정보를 쓰지는 않지만, '
+            f'최신 시장 상황이 아직 반영되지 않은 부분이 이만큼이라는 뜻입니다.</span></div>')
+    else:
+        _stale_html = ''
+
+    proj_html = (f'<div class="projbox">{_stale_html}<div class="proj-h">'
                      f'<span>12개월 뒤 지수 예측 <b id="pjrange-{a["idx"]}" style="color:{rc}">'
                      f'{_b50[0]:,.0f} ~ {_b50[1]:,.0f}</b> '
                      f'<select class="proj-sel" id="pjsel-{a["idx"]}" onchange="setBand(\'{a["idx"]}\')">'
@@ -2307,6 +2392,9 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .projhist td.dim{{color:#6b7280;font-size:11px}}
 .projhist td.bw{{font-size:11px;white-space:nowrap}}
 .projhist .sigwhy{{color:#9aa4b2}}
+.stalebox{{background:#1b1a12;border:1px solid #4a4326;border-radius:8px;
+  padding:8px 11px;margin-bottom:10px;font-size:11.5px;color:#d9c98a;line-height:1.6}}
+.stalebox .dim{{color:#8b8468;font-size:10.5px}}
 .projhist tr.rc{{opacity:.72}}
 .projhist .rawscroll{{max-height:420px;overflow:auto}}
 .projhist thead th{{position:sticky;top:0;background:#131b2a;z-index:1}}
