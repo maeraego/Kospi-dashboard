@@ -9,6 +9,9 @@ update_fwd_per.py  —  예상PER(Forward PER) 갱신 도구
      특정 월 지정          : ... update_fwd_per.py 7.4 2026-08
   3) CSV 일괄 반영        : ... update_fwd_per.py --csv fwd_per.csv
      (CSV 형식: 첫 열 날짜(YYYY-MM), 둘째 열 예상PER. 헤더 있어도 됨)
+  4) 무인 재계산 (자동화)  : ... update_fwd_per.py --refresh
+     저장된 컨센서스를 그대로 쓰고 최신 시가총액만 반영. update_all.py 가 매일 호출한다.
+     컨센서스가 바뀔 때만 사람이 --ni 로 새 숫자를 넣으면 된다.
 
 값을 어디서 보나:
   - 본인 엑셀/차트의 '예상PER' 최신값
@@ -319,8 +322,48 @@ def rebuild_from_ni():
     return merged
 
 
+def refresh_mode():
+    """저장된 컨센서스(fwd_ni.csv)를 그대로 쓰고 최신 시가총액만 다시 반영한다.
+
+    무인 실행용이다. 새 숫자를 받지 않으므로 사람이 없어도 안전하다.
+
+    왜 필요한가:
+      선행PER = 시가총액 / 12개월 예상순이익 에서 분자는 KRX가 매일 수집하지만
+      분모를 굴리는 ni_mode 는 손으로 돌려야 했다. 그래서 컨센서스가 그대로인데도
+      예상PER 이 마지막 실행 시점에 멈춘다. 2026-09-07 이후 한 달 넘게 멈춰 있었고,
+      그 사이 코스피가 6,838 -> 5,730 으로 16% 빠지는 동안 화면은 9월 PER 6.45 를
+      계속 보여줬다. 실제 10월 PER 은 5.23 이라, 가중 9.5% 인 '예상PER 괴리'가
+      통째로 틀린 값으로 들어가 코스피 점수가 -0.042 (실제 +0.128)로 나왔다.
+
+      ni_mode 의 ffill 과 수학적으로 동일한 결과를 낸다. 즉 새 정보를 만들지 않고,
+      이미 입력된 FY1/FY2 에 최신 시총과 이번 달 FY1:FY2 비중만 적용한다.
+      컨센서스 자체가 바뀌면 여전히 --ni 로 사람이 넣어야 한다.
+    """
+    nf = os.path.join(HERE, 'fwd_ni.csv')
+    if not os.path.exists(nf):
+        print("[건너뜀] fwd_ni.csv 가 없습니다. 먼저 --ni 로 컨센서스를 한 번 입력하세요.")
+        return
+    try:
+        h = pd.read_csv(nf, index_col=0, parse_dates=True)[['FY1', 'FY2']].sort_index()
+    except Exception as e:
+        print(f"[건너뜀] fwd_ni.csv 를 읽을 수 없습니다: {e}")
+        return
+    if not len(h):
+        print("[건너뜀] fwd_ni.csv 에 입력 이력이 없습니다.")
+        return
+    last = h.iloc[-1]
+    print(f"저장된 컨센서스 재사용: FY1 {last['FY1']:,.0f}조 / FY2 {last['FY2']:,.0f}조"
+          f"  (입력 {h.index[-1].date()})")
+    ni_mode(last['FY1'], last['FY2'])
+
+
 def main():
     args = [a for a in sys.argv[1:]]
+
+    # --refresh : 저장된 컨센서스 + 최신 시총으로 재계산 (무인 실행용, 입력 없음)
+    if args and args[0] in ('--refresh', '-f'):
+        refresh_mode()
+        return
 
     # --rebuild : 예상순이익 시계열로 선행PER 전체 재계산
     if args and args[0] in ('--rebuild', '-r'):

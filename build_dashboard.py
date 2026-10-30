@@ -2193,8 +2193,15 @@ AK = analyze('KOSPI'); AQ = analyze('KOSDAQ')
 asof = AK['asof']
 if HAS_FPE:
     _lag = (asof.to_period('M') - FPE_ASOF.to_period('M')).n
+    # 경고 기준을 1개월로 둔다(이전 2개월).
+    #   update_all.py 가 매일 --refresh 로 최신 시총을 반영하므로 정상이면 지연 0이다.
+    #   2개월 기준이던 때, 2026-09-07 이후 수동 재계산이 끊겨 1개월 지연이 생겼는데
+    #   경고가 안 떠서 50여 일을 몰랐다. 그 사이 가중 9.5% 인 '예상PER 괴리'가 틀린
+    #   값으로 들어가 코스피 점수가 -0.042/중립 으로 나왔다(실제 +0.128/유리).
+    #   지연이 1개월만 생겨도 자동 갱신이 깨진 것이므로 그때 바로 보여야 한다.
     fpe_note = (f' · 예상PER {FPE_ASOF.strftime("%Y-%m")} 기준'
-                + (f' <b style="color:#e08c3b">({_lag}개월 지연 — update_fwd_per.py 실행)</b>' if _lag >= 2 else ''))
+                + (f' <b style="color:#e08c3b">({_lag}개월 지연 — '
+                   f'update_fwd_per.py --refresh 실행)</b>' if _lag >= 1 else ''))
     fpe_ph = f'{df["예상PER"].dropna().iloc[-1]:.1f}'
 else:
     fpe_note = ' · <b style="color:#e08c3b">예상PER 없음</b>'
