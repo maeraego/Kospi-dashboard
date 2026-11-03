@@ -28,6 +28,9 @@ except Exception:
     pass
 
 import pandas as pd
+# 저장은 공용 유틸로 통일한다. 수집 실패로 컬럼/이력이 사라지지 않게 병합 저장한다
+# (2026-11-03 CD91 사고 — collect_util.py 의 설명 참조).
+from collect_util import merge_save
 
 # ── .env 로드는 반드시 pykrx import '앞'에 와야 한다 ──
 #   pykrx는 import 시점에 KRX_ID/KRX_PW로 로그인을 시도한다.
@@ -133,8 +136,10 @@ monthly_last = daily[[c for c in daily.columns
                       if "_순매수20" in c]].resample("ME").last()
 monthly = pd.concat([monthly_sum, monthly_last], axis=1)
 
-daily.to_parquet(os.path.join(HERE, "flow_daily.parquet"))
-monthly.to_parquet(os.path.join(HERE, "flow_monthly.parquet"))
+# 병합 저장 — 한 시장/투자자 구분이 일시적으로 안 잡혀도 이력이 날아가지 않게.
+#   (2026-11-03 ECOS CD91 사고와 같은 구조. collect_util.py 설명 참조)
+daily   = merge_save(daily,   os.path.join(HERE, "flow_daily.parquet"))
+monthly = merge_save(monthly, os.path.join(HERE, "flow_monthly.parquet"))
 
 print("\n" + "-" * 58)
 print(f"저장 완료:")

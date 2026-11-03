@@ -14,6 +14,9 @@ CNN 원본은 2011년부터라 20년 분석이 불가능하고 과거값을 공�
 """
 import numpy as np
 import pandas as pd
+# 저장은 공용 유틸로 통일한다. 입력 결측으로 컬럼/이력이 사라지지 않게 병합 저장한다
+# (2026-11-03 CD91 사고 — collect_util.py 의 설명 참조).
+from collect_util import merge_save
 
 MIN_OBS = 250      # 백분위 산출 최소 표본 (1년)
 MIN_COMP = 4       # 지수를 만들 최소 구성요소 수
@@ -138,7 +141,9 @@ if __name__ == "__main__":
 
     both = pd.concat({"KR": kr, "US": us}, axis=1)
     both.columns = [f"{a}_{b}" for a, b in both.columns]
-    both.to_parquet("fear_greed_daily.parquet")
+    # 병합 저장 — 입력 parquet 하나가 비면 그 구성요소 컬럼이 사라질 수 있다.
+    #   (2026-11-03 ECOS CD91 사고와 같은 구조. collect_util.py 설명 참조)
+    both = merge_save(both, "fear_greed_daily.parquet")
 
     print("\n" + "=" * 60)
     for m, d in (("한국", kr), ("미국", us)):

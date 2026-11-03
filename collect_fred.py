@@ -9,6 +9,9 @@ import os, sys, time, json
 from datetime import datetime
 import urllib.request
 import pandas as pd
+# 저장은 공용 유틸로 통일한다. 수집 실패로 컬럼/이력이 사라지지 않게 병합 저장한다
+# (2026-11-03 CD91 사고 — collect_util.py 의 설명 참조).
+from collect_util import merge_save
 
 # ---- credentials ----
 try:
@@ -90,8 +93,10 @@ daily.index.name = "date"
 # 월간: 각 시리즈 월말 마지막값
 monthly = daily.resample("ME").last()
 
-daily.to_parquet("fred_daily.parquet")
-monthly.to_parquet("fred_monthly.parquet")
+# 병합 저장 — 한 시리즈가 일시적으로 안 잡혀도 그 컬럼의 이력이 날아가지 않게.
+#   (2026-11-03 ECOS CD91 사고와 같은 구조. collect_util.py 설명 참조)
+daily   = merge_save(daily,   "fred_daily.parquet")
+monthly = merge_save(monthly, "fred_monthly.parquet")
 
 print("\n" + "=" * 56)
 print(f"일별 : {daily.index[0].date()} ~ {daily.index[-1].date()}  ({len(daily)} rows)")

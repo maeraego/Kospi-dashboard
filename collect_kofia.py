@@ -26,6 +26,9 @@ API 메모 (역공학 결과 — 문서 없음):
 import json, time, sys, os
 import urllib.request
 import pandas as pd
+# 저장은 공용 유틸로 통일한다. 수집 실패로 컬럼/이력이 사라지지 않게 병합 저장한다
+# (2026-11-03 CD91 사고 — collect_util.py 의 설명 참조).
+from collect_util import merge_save
 
 BASE = "https://freesis.kofia.or.kr"
 HDRS = {'Content-Type': 'application/json;charset=UTF-8',
@@ -145,6 +148,12 @@ def main():
         if not parts:
             print("[정보] 새 데이터 없음 - 기존 파일 유지")
             return
+        if len(parts) < len(SPECS):
+            # 일부만 성공하면 겹치는 날짜에서 실패한 SPEC 의 컬럼이 NaN 으로 덮인다
+            # (concat 후 keep="last" 가 새 행을 우선하기 때문).
+            # 아래 merge_save 가 기존 값으로 그 자리를 메우지만 원인은 봐야 한다.
+            print(f"  ! SPEC {len(parts)}/{len(SPECS)} 만 성공"
+                  f" — 빈 자리는 기존 값으로 메웁니다")
         new = parts[0]
         for p in parts[1:]:
             new = new.join(p, how="outer")
@@ -175,7 +184,10 @@ def main():
     if "신용융자" in df:
         df["신용_대주비"] = df["신용융자"] / df["대주"].replace(0, pd.NA)
 
-    df.to_parquet(OUT)
+    # 병합 저장 — 전체 수집 경로에서 한 SPEC 이 실패하면 그 컬럼이 통째로 사라지고,
+    # 증분 경로에서는 겹치는 14일이 NaN 으로 덮인다. 둘 다 기존 값으로 메운다.
+    #   (2026-11-03 ECOS CD91 사고와 같은 구조. collect_util.py 설명 참조)
+    df = merge_save(df, OUT)
     print("\n" + "=" * 60)
     print(f"기간 : {df.index[0].date()} ~ {df.index[-1].date()}  ({len(df)} rows)")
     for c in df.columns:

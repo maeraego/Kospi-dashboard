@@ -30,6 +30,9 @@ VKOSPI는 코스피200 옵션 가격에서 뽑은 향후 30일 기대변동성(�
 """
 import os, sys, time
 import pandas as pd
+# 저장은 공용 유틸로 통일한다. 수집 실패로 컬럼/이력이 사라지지 않게 병합 저장한다
+# (2026-11-03 CD91 사고 — collect_util.py 의 설명 참조).
+from collect_util import merge_save
 
 OUT = "vkospi_daily.parquet"
 URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
@@ -138,7 +141,9 @@ def main():
             print("[중단] 수집 실패"); sys.exit(1)
 
     df.index.name = "date"
-    df.to_parquet(OUT)
+    # 병합 저장 — --full 수집에서 일부 구간이 빠져도 기존 이력이 잘리지 않게.
+    #   (2026-11-03 ECOS CD91 사고와 같은 구조. collect_util.py 설명 참조)
+    df = merge_save(df, OUT)
     print("\n" + "=" * 56)
     print(f"기간 : {df.index[0].date()} ~ {df.index[-1].date()}  ({len(df)} rows)")
     s = df["VKOSPI"].dropna()

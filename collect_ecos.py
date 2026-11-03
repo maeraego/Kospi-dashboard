@@ -14,6 +14,9 @@ import os, sys, time, json, re
 from datetime import datetime
 import urllib.request
 import pandas as pd
+# 저장은 공용 유틸로 통일한다. 수집 실패로 컬럼/이력이 사라지지 않게 병합 저장한다
+# (2026-11-03 CD91 사고 — collect_util.py 의 설명 참조).
+from collect_util import merge_save
 
 # ---- credentials ----
 try:
@@ -222,39 +225,6 @@ for k in MONTHLY_KEYS:
     if k in S:
         monthly = monthly.join(S[k].rename(k), how="outer")
 monthly.index.name = "date"
-
-def merge_save(new, path):
-    """기존 parquet 과 합쳐 저장한다.
-
-    ★ 통째로 덮어쓰면 안 된다.
-      수집은 지표별로 독립 실패하는데 저장은 한 덩어리다. 그래서 한 지표가
-      일시적으로 안 잡히면 그 컬럼이 파일에서 통째로 사라지고, 31년 이력이
-      같이 날아간다. 2026-11-03 에 CD91 이 이렇게 사라져
-      season_dashboard.py 의 e['CD91'] 가 KeyError 로 죽고 클라우드 빌드가
-      실패했다(로컬 build_dashboard.py 는 df.get 이라 멀쩡해서 더 늦게 발견됨).
-
-      새 값이 있는 자리는 항상 새 값이 이긴다. 기존 파일은 새 수집이
-      비워둔 자리만 메운다. 즉 '못 받은 것'은 지난 값을 유지하고,
-      '받은 것'은 최신으로 갱신된다. 컬럼이 이렇게 유지되면 경고를 띄운다.
-    """
-    if not os.path.exists(path):
-        new.to_parquet(path)
-        return new
-    try:
-        old = pd.read_parquet(path)
-    except Exception as e:
-        print(f"  ! 기존 {path} 를 읽을 수 없어 새로 씁니다: {e}")
-        new.to_parquet(path)
-        return new
-    lost = [c for c in old.columns if c not in new.columns]
-    out = new.combine_first(old)            # 새 값 우선, 빈 자리만 기존으로 메움
-    out = out[list(new.columns) + lost]     # 컬럼 순서 유지 + 못 받은 건 뒤에
-    out.index.name = new.index.name
-    if lost:
-        print(f"  ! 이번 수집에서 빠진 컬럼 {lost} — 기존 이력을 유지합니다."
-              f" (원인 확인 필요: 위 '항목 매칭 실패' 로그)")
-    out.to_parquet(path)
-    return out
 
 daily   = merge_save(daily,   "ecos_daily.parquet")
 monthly = merge_save(monthly, "ecos_monthly.parquet")
