@@ -53,9 +53,32 @@ def _get(url, retries=4):
             last = str(e); time.sleep(1.5 * (i + 1))
     raise RuntimeError(last)
 
-def item_list(stat_code):
-    d = _get(f"{BASE}/StatisticItemList/{KEY}/json/kr/1/1000/{stat_code}")
-    return d.get("StatisticItemList", {}).get("row", []) or []
+_ITEM_CACHE = {}
+
+def item_list(stat_code, retries=3):
+    """통계표 항목 목록. 표 단위로 캐시한다(같은 표를 4번 부르던 걸 1번으로).
+
+    ★ 빈 목록을 그대로 돌려주면 안 된다.
+      ECOS 가 일시적으로 RESULT 오류(요청 한도·점검 등)를 주면 응답 자체는
+      정상 JSON 이라 _get 의 예외 재시도에 걸리지 않는다. 그러면 항목 목록만
+      비어서 돌아와, 그 지표 하나가 '항목 매칭 실패'로 조용히 빠진다.
+      2026-11-03 에 이 경우로 CD91 이 빠졌다. 같은 표(817Y002)의 앞 3개는
+      성공했는데 4번째 호출만 빈 응답이었다. 표당 1회로 줄이고 재시도를 둔다.
+    """
+    if stat_code in _ITEM_CACHE:
+        return _ITEM_CACHE[stat_code]
+    rows, why = [], ""
+    for i in range(retries):
+        d = _get(f"{BASE}/StatisticItemList/{KEY}/json/kr/1/1000/{stat_code}")
+        rows = d.get("StatisticItemList", {}).get("row", []) or []
+        if rows:
+            break
+        why = str(d.get("RESULT", d))[:120]
+        print(f"  ! 항목목록 비어 있음 @ {stat_code} ({i+1}/{retries}): {why}")
+        time.sleep(2.0 * (i + 1))
+    if rows:
+        _ITEM_CACHE[stat_code] = rows
+    return rows
 
 def pick_item(stat_code, patterns):
     """통계표 항목 중 patterns(정규식 리스트) 첫 매치의 (code, name) 반환."""
@@ -200,8 +223,41 @@ for k in MONTHLY_KEYS:
         monthly = monthly.join(S[k].rename(k), how="outer")
 monthly.index.name = "date"
 
-daily.to_parquet("ecos_daily.parquet")
-monthly.to_parquet("ecos_monthly.parquet")
+def merge_save(new, path):
+    """기존 parquet 과 합쳐 저장한다.
+
+    ★ 통째로 덮어쓰면 안 된다.
+      수집은 지표별로 독립 실패하는데 저장은 한 덩어리다. 그래서 한 지표가
+      일시적으로 안 잡히면 그 컬럼이 파일에서 통째로 사라지고, 31년 이력이
+      같이 날아간다. 2026-11-03 에 CD91 이 이렇게 사라져
+      season_dashboard.py 의 e['CD91'] 가 KeyError 로 죽고 클라우드 빌드가
+      실패했다(로컬 build_dashboard.py 는 df.get 이라 멀쩡해서 더 늦게 발견됨).
+
+      새 값이 있는 자리는 항상 새 값이 이긴다. 기존 파일은 새 수집이
+      비워둔 자리만 메운다. 즉 '못 받은 것'은 지난 값을 유지하고,
+      '받은 것'은 최신으로 갱신된다. 컬럼이 이렇게 유지되면 경고를 띄운다.
+    """
+    if not os.path.exists(path):
+        new.to_parquet(path)
+        return new
+    try:
+        old = pd.read_parquet(path)
+    except Exception as e:
+        print(f"  ! 기존 {path} 를 읽을 수 없어 새로 씁니다: {e}")
+        new.to_parquet(path)
+        return new
+    lost = [c for c in old.columns if c not in new.columns]
+    out = new.combine_first(old)            # 새 값 우선, 빈 자리만 기존으로 메움
+    out = out[list(new.columns) + lost]     # 컬럼 순서 유지 + 못 받은 건 뒤에
+    out.index.name = new.index.name
+    if lost:
+        print(f"  ! 이번 수집에서 빠진 컬럼 {lost} — 기존 이력을 유지합니다."
+              f" (원인 확인 필요: 위 '항목 매칭 실패' 로그)")
+    out.to_parquet(path)
+    return out
+
+daily   = merge_save(daily,   "ecos_daily.parquet")
+monthly = merge_save(monthly, "ecos_monthly.parquet")
 
 print("\n" + "=" * 56)
 print(f"일별 : {daily.index[0].date()} ~ {daily.index[-1].date()}  ({len(daily)} rows)")

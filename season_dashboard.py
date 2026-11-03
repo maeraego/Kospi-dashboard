@@ -315,7 +315,18 @@ def block(key, label, r, cut, cash, px):
 def main():
     m, d, e = load()
     cut = SC.last_complete_month(d.index)
-    cash = e['CD91'] / 12
+    # 무위험수익률(백테스트의 '현금' 구간). CD91 이 없으면 국고채3년으로 대체한다.
+    #   ★ e['CD91'] 로 직접 꺼내면 안 된다. 수집이 한 번 실패해 컬럼이 빠지면
+    #   KeyError 로 죽는다. 2026-11-03 에 실제로 그랬고, build_dashboard.py 는
+    #   df.get 을 써서 멀쩡했기 때문에 로컬은 성공하고 클라우드만 실패했다.
+    #   (수집부도 병합 저장으로 고쳤지만, 쓰는 쪽도 혼자 버텨야 한다.)
+    _rf = next((e[c] for c in ('CD91', '국고채3년', '기준금리') if c in e), None)
+    if _rf is None:
+        print('[중단] 무위험수익률로 쓸 금리 컬럼이 없습니다 (CD91/국고채3년/기준금리).')
+        sys.exit(1)
+    if 'CD91' not in e:
+        print(f'  ! CD91 없음 — {_rf.name} 으로 대체합니다 (ecos_monthly.parquet 확인 필요)')
+    cash = _rf / 12
     today = pd.Timestamp.today()
     now = SC.season_now(today)
     # 겨울비중은 '이번 달 말에 진입하면 향후 6개월'을 기준으로 본다(통계 절단월 cut 이 아니라).
