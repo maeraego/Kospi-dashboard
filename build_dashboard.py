@@ -50,6 +50,16 @@ except Exception as _e:                     # noqa: BLE001
     SEA, HAS_SEASON = None, False
     print(f'[경고] season_core 로드 실패 — 계절 오버레이를 건너뜁니다: {_e}')
 
+# ── 연도 홀짝(짝수해/홀수해) 코어 ──
+#   계절성과 같은 취급: 종합점수 미반영, ① 홀짝 오버레이 패널 ② 켈리 부록(최장기 재보정)에만 쓴다.
+#   코스피는 1981~1994 연말 종가를 붙여 1982년부터 44개 연간수익(독립 표본)을 쓴다.
+try:
+    import parity_core as PAR
+    HAS_PARITY = True
+except Exception as _e:                     # noqa: BLE001
+    PAR, HAS_PARITY = None, False
+    print(f'[경고] parity_core 로드 실패 — 홀짝 패널·켈리 부록을 건너뜁니다: {_e}')
+
 # ── 원천별 로드 + 출처 귀속 추적 ──
 SRC_META = [
     ('krx_monthly.parquet',  'KRX 한국거래소',        'pykrx'),
@@ -1871,6 +1881,268 @@ def season_section(AK, AQ):
             f'</div></div></div>')
 
 
+_PAR_CACHE = {}
+
+
+def parity_pack(idx):
+    """홀짝 통계 + 켈리 홀짝조정치. parity_core 가 없거나 실패하면 None."""
+    if not HAS_PARITY:
+        return None
+    if idx in _PAR_CACHE:
+        return _PAR_CACHE[idx]
+    try:
+        cut = (SEA.last_complete_month(_d.index) if HAS_SEASON
+               else _d.index.max().to_period('M').to_timestamp('M') - pd.offsets.MonthEnd(1))
+        px = df[f'{idx}_종가']
+        r, ytd = PAR.annual(px, idx, cut)
+        kf = lambda v: _kelly_empirical(v, 0.0, -3.0, 8.0, 441)   # 앵커용 넓은 상하한(계절과 동일)
+        ps = PAR.parity_stats(r, kf)
+        ent = pd.Timestamp.today().to_period('M').to_timestamp('M')
+        dl = PAR.parity_delta(ps, PAR.odd_share(ent))
+        p = dict(ps=ps, ytd=ytd, x=PAR.parity_season(px, cut), dl=dl, ent=ent, cut=cut)
+    except Exception as e:                   # noqa: BLE001
+        print(f'[경고] 홀짝 계산 실패({idx}): {e}')
+        p = None
+    _PAR_CACHE[idx] = p
+    return p
+
+
+def _par_spark(r, w=250, h=56):
+    """연간수익 막대 — 홀수해 초록 / 짝수해 빨강"""
+    vals = [float(v) * 100 for v in r.values]
+    lo, hi = min(min(vals), 0), max(max(vals), 0)
+    rng = (hi - lo) or 1
+    Y = lambda v: (hi - v) / rng * h
+    bw = w / len(vals)
+    out = [f'<svg viewBox="0 0 {w} {h}" class="seaspark">',
+           f'<line x1="0" x2="{w}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" stroke="#3a465a"/>']
+    for i, (y, v) in enumerate(zip(r.index, vals)):
+        y0, y1 = Y(max(v, 0)), Y(min(v, 0))
+        c = '#3fb37f' if y % 2 else '#e5484d'
+        out.append(f'<rect x="{i*bw+bw*.12:.1f}" y="{y0:.1f}" width="{bw*.76:.1f}" '
+                   f'height="{max(y1-y0,0.6):.1f}" fill="{c}" rx="1"><title>{y}년 '
+                   f'({"홀수" if y % 2 else "짝수"}) {v:+.1f}%</title></rect>')
+    out.append('</svg>')
+    return ''.join(out)
+
+
+def parity_section(AK, AQ):
+    P = {a['idx']: parity_pack(a['idx']) for a in (AK, AQ)}
+    if any(v is None for v in P.values()):
+        return ''
+    yr = pd.Timestamp.today().year
+    nowlab = f'{yr}년 {"홀수" if yr % 2 else "짝수"}해 · {yr+1}년 {"홀수" if (yr+1) % 2 else "짝수"}해 대기'
+    ncls = 'ok' if yr % 2 else 'bad'
+    cols = ''
+    for lab, a in (('코스피', AK), ('코스닥', AQ)):
+        p = P[a['idx']]; ps = p['ps']; o, e = ps['odd'], ps['even']; x = p['x']; y = p['ytd']
+        subs = ' · '.join(f'{s_["a"]}~{s_["b"]} {s_["diff"]*100:+.0f}%p'
+                          f'<span class="dim">(p={s_["p"]:.2f})</span>' for s_ in ps['sub'])
+        ytd = (f'<div class="seabw">올해 {y["year"]}년({y["parity"]}해) '
+               f'{y["asof"]:%m}월말까지 <b>{y["r"]*100:+.1f}%</b></div>') if y else ''
+        cols += (f'<div class="seac"><div class="seac-h">{lab} '
+                 f'<span class="dim" style="font-weight:400">{ps["span"][0]}~{ps["span"][1]} · {o["n"]+e["n"]}년</span></div>'
+                 f'{_par_spark(ps["r"])}'
+                 f'<div class="seagrid">'
+                 f'<div><span class="k">홀수해</span>'
+                 f'<span class="v" style="color:#3fb37f">{o["mu"]*100:+.1f}%<small>/년 평균</small></span>'
+                 f'<span class="c">승률 {o["p"]*100:.0f}% · 기하 {o["geo"]*100:+.1f}% · 중앙 {o["med"]*100:+.1f}%</span></div>'
+                 f'<div><span class="k">짝수해</span>'
+                 f'<span class="v" style="color:#e5484d">{e["mu"]*100:+.1f}%<small>/년 평균</small></span>'
+                 f'<span class="c">승률 {e["p"]*100:.0f}% · 기하 {e["geo"]*100:+.1f}% · 중앙 {e["med"]*100:+.1f}%</span></div>'
+                 f'<div><span class="k">격차 · 유의성</span>'
+                 f'<span class="v">{(o["mu"]-e["mu"])*100:+.1f}<small>%p/년</small></span>'
+                 f'<span class="c">Welch t={ps["t"]:.2f} · p={ps["p"]:.3f}</span></div>'
+                 f'<div><span class="k">홀수해가 직전 짝수해를 이김</span>'
+                 f'<span class="v">{ps["beat"]}<small>/{ps["npair"]}</small></span>'
+                 f'<span class="c">절사평균 홀 {o["tm"]*100:+.1f}% · 짝 {e["tm"]*100:+.1f}%</span></div>'
+                 f'</div>'
+                 f'<div class="seabw">구간별 격차: {subs}</div>'
+                 f'<div class="rawscroll" style="margin-top:8px"><table class="raw kt"><thead><tr>'
+                 f'<th>월평균 <span class="dim">({x["span"][0]}~)</span></th><th>11~4월 천국</th><th>5~10월 지옥</th></tr></thead><tbody>'
+                 f'<tr><td>홀수해</td><td>{x["oddw"]["mean"]:+.2f}% <span class="dim">승{x["oddw"]["win"]:.0f}%</span></td>'
+                 f'<td>{x["odds"]["mean"]:+.2f}% <span class="dim">승{x["odds"]["win"]:.0f}%</span></td></tr>'
+                 f'<tr><td>짝수해</td><td>{x["evenw"]["mean"]:+.2f}% <span class="dim">승{x["evenw"]["win"]:.0f}%</span></td>'
+                 f'<td style="color:#e5484d;font-weight:600">{x["evens"]["mean"]:+.2f}% '
+                 f'<span class="dim">승{x["evens"]["win"]:.0f}%</span></td></tr>'
+                 f'</tbody></table></div>{ytd}</div>')
+    kk, kq = P['KOSPI'], P['KOSDAQ']
+    k1 = kk['ps']['sub'][0] if kk['ps']['sub'] else None
+    return (f'<div class="sec"><div class="sec-head">'
+            f'<div class="sec-t">홀짝 오버레이 <span class="sec-px">짝수해/홀수해 · 참고지표 · 종합점수 미반영</span></div>'
+            f'<div class="ctrls"><span class="dbadge {ncls}"><b>{nowlab}</b></span>'
+            f'<button class="btn" onclick="togglePA()">자세히 보기/숨기기</button></div></div>'
+            f'<div class="card">'
+            f'<div class="seabar"><div><span class="k">이번 달 말 진입 시 향후 12개월 중 홀수해</span>'
+            f'<span class="v">{kk["dl"]["share"]*100:.0f}%</span></div>'
+            f'<div><span class="k">켈리 홀짝조정 (부록에서 켜기)</span>'
+            f'<span class="v">코스피 {kk["dl"]["adj"]*100:+.0f}%p · 코스닥 {kq["dl"]["adj"]*100:+.0f}%p</span></div>'
+            f'</div>'
+            f'<div class="seacols">{cols}</div>'
+            f'<div id="paWrap" style="display:none">'
+            f'<p class="note"><b>무엇인가.</b> "홀수해는 오르고 짝수해는 쉰다"는 속설을 연간 수익률로 검정했습니다. '
+            f'달력 연도 1월 첫날~12월 말 수익을 홀/짝으로 나눈 것입니다. 코스피는 1980=100 기준점 이후 '
+            f'공표된 연말 종가(1981~1994)를 붙여 <b>{kk["ps"]["span"][0]}년부터 {kk["ps"]["all"]["n"]}개 연도</b>를 썼습니다. '
+            f'연간수익은 서로 겹치지 않아 <b>전부 독립 표본</b>입니다.</p>'
+            f'<p class="note"><b>계절성과 다른 점 — 12개월 지평에서 상쇄되지 않는다.</b> 핼러윈 효과는 12개월 창이 '
+            f'열두 달을 모두 담아 사라지지만, 홀짝은 창이 어느 해에 걸치느냐로 갈립니다(1월 진입이면 100% 한쪽). '
+            f'그래도 <b>종합점수에는 넣지 않았습니다</b> — 경제적 기전이 확인되지 않았고(아래 한계), '
+            f'"기전이 없는 보정을 성적만 보고 넣지 않는다"는 이 모델의 원칙(예상PER 발표시차 사례) 때문입니다. '
+            f'대신 켈리 부록에서 <b>직접 켜고 끄는 선택 조정</b>으로 제공합니다.</p>'
+            f'<p class="note"><b>홀짝 × 계절.</b> 두 효과는 겹칩니다. 특히 <b>짝수해 여름(5~10월)</b>이 가장 나쁩니다 '
+            f'(코스피 월 {kk["x"]["evens"]["mean"]:+.2f}% · 코스닥 {kq["x"]["evens"]["mean"]:+.2f}%). '
+            f'홀수해에는 여름에도 플러스였습니다. 1995년 이후 월별 데이터 기준입니다.</p>'
+            f'<p class="note kwarn"><b>한계.</b> '
+            f'① 코스피 44년 전체로는 p={kk["ps"]["p"]:.2f}로 <b>유의하지 않습니다</b>. '
+            + (f'1982~1994년에는 짝수해가 오히려 더 좋았습니다(격차 {k1["diff"]*100:+.0f}%p, p={k1["p"]:.2f}). '
+               if k1 and k1['a'] < 1995 else '')
+            + f'효과는 1995년 이후(코스피)와 코스닥(p={kq["ps"]["p"]:.3f})에서 강합니다. '
+            f'② 각 22·14개 연도뿐이라 극단 연도 하나(코스닥 1999 +241%, 2000 −80%)가 평균을 크게 흔듭니다 — '
+            f'절사평균과 중앙값을 함께 보십시오. '
+            f'③ 기전 후보는 있으나 검증되지 않았습니다: 미국 대통령 임기 주기(중간선거 해=짝수 약세, 선거 전해=홀수 강세), '
+            f'한국 총선(1988년 이후 짝수해). 우연한 패턴일 가능성을 배제할 수 없습니다. '
+            f'④ 올해 {kk["ytd"]["year"] if kk["ytd"] else ""}년은 짝수해인데 코스피가 '
+            f'{(kk["ytd"]["r"]*100 if kk["ytd"] else 0):+.0f}%(완결월 기준)로 반례입니다. '
+            f'⑤ 가격지수라 배당이 빠져 있습니다.</p>'
+            f'</div></div></div>')
+
+
+_KAPP_JS = r"""
+<script>
+(function(){
+  function clip(v,a,b){return Math.max(a,Math.min(b,v));}
+  function pc(v,d){return (v>=0?'+':'')+(v*100).toFixed(d==null?0:d)+'%';}
+  window.kappCalc=function(id){
+    var D=window.KAPP[id], root=document.getElementById('kapp_'+id); if(!D||!root) return;
+    var k=+root.querySelector('.ka-k').value;
+    var usP=root.querySelector('.ka-par').checked, sp=+root.querySelector('.ka-ps').value;
+    var seEl=root.querySelector('.ka-sea'), usS=seEl&&seEl.checked;
+    root.querySelector('.ka-kv').textContent=k+'년';
+    root.querySelector('.ka-psv').textContent=sp.toFixed(1);
+    var R=D.reg, L=D.lng, n=R.n, w=n+k;
+    var p=(n*R.p+k*L.p)/w, aw=(n*R.aw+k*L.aw)/w, al=(n*R.al+k*L.al)/w, f;
+    if(k===0){ f=D.main; }
+    else{
+      f = al>0 && aw>0 ? p-(1-p)*al/aw : (al===0?D.kmax:D.kmin);
+      f += D.iso*n/w;                  // 단조보정 몫은 국면 가중만큼만 남긴다(k=0과 연속)
+    }
+    var b0=f, dp=usP? sp*D.parRaw:0, ds=usS? D.sea:0, fin=clip(b0+dp+ds,D.kmin,D.kmax);
+    root.querySelector('.ka-p').textContent=(p*100).toFixed(0)+'%';
+    root.querySelector('.ka-b').textContent=(al>0?(aw/al).toFixed(2):'∞');
+    root.querySelector('.ka-f0').textContent=pc(clip(b0,D.kmin,D.kmax));
+    root.querySelector('.ka-dp').textContent=usP?pc(dp).replace('%','%p'):'끔';
+    root.querySelector('.ka-ds').textContent=seEl?(usS?pc(ds).replace('%','%p'):'끔'):'없음';
+    var o=root.querySelector('.ka-fin'); o.textContent=pc(fin);
+    o.style.color=fin>0?'#3fb37f':'#e5484d';
+    root.querySelector('.ka-cap').textContent=
+      (Math.abs(b0+dp+ds-fin)>1e-9?'상하한('+pc(D.kmax)+'/'+pc(D.kmin)+')에 걸려 잘림 · ':'')+
+      '국면 '+n+' : 장기 '+k+' (독립표본 기준 가중)';
+  };
+  document.addEventListener('DOMContentLoaded',function(){
+    for(var id in window.KAPP){ kappCalc(id); }
+  });
+})();
+</script>"""
+
+
+def kelly_appendix(AK, AQ):
+    """베팅비율 부록 — 최장기 연간수익(독립 표본)으로 승률·켈리를 다시 재고,
+    사용자가 '국면 추정 ↔ 장기 기저율' 가중과 홀짝·계절 조정을 직접 켜고 끄게 한다."""
+    P = {a['idx']: parity_pack(a['idx']) for a in (AK, AQ)}
+    if any(v is None for v in P.values()):
+        return ''
+    KM, Km = AK['bet']['kmax'], AK['bet']['kmin']
+
+    def fmt_f(v):
+        cv = max(Km, min(KM, v))
+        c = '#3fb37f' if cv > 0 else '#e5484d'
+        return f'<span style="color:{c};font-weight:600">{cv*100:+.0f}%{"*" if abs(cv-v)>1e-9 else ""}</span>'
+
+    tabs, boxes, data = '', '', {}
+    for lab, a in (('코스피', AK), ('코스닥', AQ)):
+        pk = P[a['idx']]; ps = pk['ps']
+        rows = ''
+        for key, nm in (('all', '전체'), ('odd', '홀수해'), ('even', '짝수해')):
+            b = ps[key]
+            bb = '∞' if b['b'] == float('inf') else f'{b["b"]:.2f}'
+            rows += (f'<tr{" class=here" if key=="all" else ""}><td>{lab if key=="all" else ""}</td><td>{nm}</td>'
+                     f'<td class="dim">{b["n"]}</td><td>{b["p"]*100:.0f}%</td>'
+                     f'<td>{b["aw"]*100:+.1f}%</td><td>{b["al"]*100:.1f}%</td><td>{bb}</td>'
+                     f'<td class="bd">{fmt_f(b["f"])}</td>'
+                     f'<td>{b["mu"]*100:+.1f}%</td><td>{b["geo"]*100:+.1f}%</td><td class="dim">{b["sd"]*100:.1f}%</td>'
+                     f'<td>{fmt_f(b["fc"])}</td></tr>')
+        bt = a['bet']; cr = bt['rows'][bt['cur_kb']] if bt['rows'] else None
+        if cr and cr['n']:
+            bb = '∞' if cr['b'] == float('inf') else f'{cr["b"]:.2f}'
+            rows += (f'<tr><td></td><td class="dim">참고: 현재 국면({cr["nm"]})</td>'
+                     f'<td class="dim">{cr["n"]}<small>(독립≈{max(1, cr["n"]//12)})</small></td>'
+                     f'<td class="dim">{cr["p"]*100:.0f}%</td><td class="dim">{cr["aw"]*100:+.1f}%</td>'
+                     f'<td class="dim">{cr["al"]*100:.1f}%</td><td class="dim">{bb}</td>'
+                     f'<td class="bd">{fmt_f(cr["fc"])}</td><td class="dim">{cr["mu"]*100:+.1f}%</td>'
+                     f'<td class="dim">–</td><td class="dim">{cr["sd"]*100:.1f}%</td><td>{fmt_f(cr["fcontc"])}</td></tr>')
+        tabs += rows
+        if not (cr and cr['n']):
+            continue
+        sp = season_pack(a['idx'])
+        sea = sp['dl']['adj'] if sp else None
+        al_ = ps['all']; dl = pk['dl']
+        data[a['idx']] = dict(
+            reg=dict(p=cr['p'], aw=cr['aw'], al=cr['al'], n=max(1, cr['n'] // 12)),
+            lng=dict(p=al_['p'], aw=al_['aw'], al=al_['al']),
+            main=bt['now'], iso=cr['f_adj'] - cr['f'], parRaw=dl['raw'],
+            sea=sea, kmax=KM, kmin=Km)
+        seab = (f'<label><input type="checkbox" class="ka-sea" onchange="kappCalc(\'{a["idx"]}\')"> '
+                f'계절 조정 <span class="dim">({sea*100:+.0f}%p, 6개월 겨울비중 기준)</span></label>'
+                if sea is not None else '')
+        boxes += (f'<div class="kb kapp" id="kapp_{a["idx"]}"><div class="kb-h">{lab} — 재보정</div>'
+                  f'<div class="ka-row"><span>장기 기저율 가중 k</span>'
+                  f'<input type="range" class="ka-k" min="0" max="44" step="1" value="0" '
+                  f'oninput="kappCalc(\'{a["idx"]}\')"><b class="ka-kv">0년</b></div>'
+                  f'<div class="ka-row"><label><input type="checkbox" class="ka-par" '
+                  f'onchange="kappCalc(\'{a["idx"]}\')"> 홀짝 조정</label>'
+                  f'<span class="dim">강도</span><input type="range" class="ka-ps" min="0" max="1" step="0.1" '
+                  f'value="{PAR.SHRINK}" oninput="kappCalc(\'{a["idx"]}\')"><b class="ka-psv">{PAR.SHRINK:.1f}</b></div>'
+                  f'<div class="ka-row">{seab}</div>'
+                  f'<div class="ka-out"><div>재보정 승률 <b class="ka-p"></b> · 손익비 <b class="ka-b"></b></div>'
+                  f'<div>기본 f* <b class="ka-f0"></b> + 홀짝 <b class="ka-dp"></b> + 계절 <b class="ka-ds"></b></div>'
+                  f'<div class="ka-big">최종 <b class="ka-fin"></b></div>'
+                  f'<div class="dim ka-cap"></div></div>'
+                  f'<div class="kb-note">향후 12개월 중 홀수해 {dl["share"]*100:.0f}% → 원조정 '
+                  f'{dl["raw"]*100:+.0f}%p '
+                  f'(홀수 f* {dl["fo"]*100:+.0f}% · 짝수 {dl["fe"]*100:+.0f}% · 전체 {dl["fa"]*100:+.0f}%, 상하한 전 값)</div></div>')
+
+    kk = P['KOSPI']['ps']
+    return (f'<h3 class="bt-h">부록 — 최장기 데이터로 다시 잰 승률·베팅비율</h3>'
+            f'<p class="note" style="margin:0 0 10px"><b>왜 필요한가.</b> 위 표의 국면별 승률은 월별 12개월 수익이라 '
+            f'서로 겹쳐서, 국면당 <b>독립 표본이 {max(1, AK["bet"]["rows"][AK["bet"]["cur_kb"]]["n"]//12) if AK["bet"]["rows"] else 5}개 안팎</b>뿐입니다(승률 표준오차 ±20%p 이상). '
+            f'여기서는 겹치지 않는 <b>달력 연도 수익</b>을 최대한 길게 씁니다 — 코스피 {kk["span"][0]}~{kk["span"][1]} '
+            f'<b>{kk["all"]["n"]}년</b>(1981~1994 공표 연말종가 + 1995~ 보유 데이터), 코스닥 '
+            f'{P["KOSDAQ"]["ps"]["span"][0]}~{P["KOSDAQ"]["ps"]["span"][1]} {P["KOSDAQ"]["ps"]["all"]["n"]}년. '
+            f'점수 조건은 없지만(점수는 2000년 전후부터만 계산 가능) 표본이 10배 많아 <b>기저율(사전분포)</b>로 쓰기 좋습니다. '
+            f'연속형은 무위험수익 0 기준입니다(1995년 이전 국고채 자료 없음).</p>'
+            f'<div class="rawscroll"><table class="raw kt"><thead>'
+            f'<tr><th rowspan="2">지수</th><th rowspan="2">연도 구분</th><th rowspan="2">n(년)</th>'
+            f'<th colspan="5" class="grp">① 단순 켈리 f* = p − q/b</th>'
+            f'<th colspan="4" class="grp">② 연속형 · 분포</th></tr>'
+            f'<tr><th>승률 p</th><th>평균이익</th><th>평균손실</th><th>손익비 b</th><th class="bd">f*</th>'
+            f'<th>산술평균</th><th>기하평균</th><th>σ</th><th>f*</th></tr>'
+            f'</thead><tbody>{tabs}</tbody></table></div>'
+            f'<div class="kb-note">* 상하한(+150%/−50%) 적용 · 연간 1회 리밸런싱 기준</div>'
+            f'<p class="note" style="margin:12px 0 0"><b>재보정 방법 (직접 조정).</b><br>'
+            f'① <b>승률 수축</b> — 국면 추정치와 장기 기저율을 표본 수로 가중평균합니다: '
+            f'<b>p* = (n<sub>국면</sub>·p<sub>국면</sub> + k·p<sub>장기</sub>) / (n<sub>국면</sub> + k)</b>, '
+            f'평균이익·평균손실도 같은 방식. n<sub>국면</sub>은 독립 표본 수(관측치÷12)입니다. '
+            f'k=0이면 위 메인 표 값 그대로, k가 커질수록 "국면과 무관한 장기 평균" 쪽으로 끌려갑니다. '
+            f'k = n<sub>국면</sub>이면 반반입니다.<br>'
+            f'② <b>홀짝 조정</b> — 향후 12개월이 홀수해/짝수해에 걸친 몫으로 두 앵커의 f* 차이를 가산합니다: '
+            f'Δf = 강도 × [홀수몫×(f<sub>홀</sub>−f<sub>전체</sub>) + 짝수몫×(f<sub>짝</sub>−f<sub>전체</sub>)]. '
+            f'기본 강도 0.5는 계절·국면프리미엄과 같은 관례(절반만 반영)입니다.<br>'
+            f'③ <b>계절 조정</b> — 위 베팅 표의 계절 조정 한 줄과 같은 값입니다. '
+            f'<span class="dim">홀짝과 계절은 겹치므로(짝수해 여름이 최악) 둘 다 켜면 일부 이중 계산이 될 수 있습니다.</span></p>'
+            f'<div class="kcols">{boxes}</div>'
+            f'<script>window.KAPP={json.dumps(data)};</script>{_KAPP_JS}')
+
+
 def kelly_section(AK, AQ):
     def block(lab, a):
         bt = a['bet']; nb = bt['now']; ck = bt['cur_kb']
@@ -1986,6 +2258,7 @@ def kelly_section(AK, AQ):
             f'그 전제를 제약으로 걸어 <b>뒤집힌 인접 국면을 표본가중 평균으로 병합</b>했습니다'
             f'(단조증가 제약 회귀). 표에 원식 값과 적용값을 나란히 두었으니 보정 폭을 직접 확인하실 수 있습니다.</p>'
             f'<div class="kcols">{block("코스피", AK)}{block("코스닥", AQ)}</div>{btml}'
+            f'{kelly_appendix(AK, AQ)}'
             f'<p class="note kwarn" style="margin-top:12px"><b>참고용 수치이며 투자 조언이 아닙니다.</b> '
             f'이 비중은 코스피·코스닥 지수만 보고 과거 통계로 만든 것이며, 개인의 나이·소득·부채·투자기간·'
             f'손실감내도를 전혀 반영하지 않습니다. 100% 초과 레버리지와 공매도는 상당한 추가 위험을 수반하고, '
@@ -2228,7 +2501,7 @@ for _c in ('KOSPI_PER', 'KOSDAQ_PER', '국고채10년', '수출금액', '예상P
            'KOSPI_종가', 'KOSDAQ_종가'):
     if _c in df.columns: USED_COLS.add(_c)
 body = (section('코스피', AK) + section('코스닥', AQ) + weights_section(AK, AQ)
-        + season_section(AK, AQ) + kelly_section(AK, AQ) + data_section() + glossary_section())
+        + season_section(AK, AQ) + parity_section(AK, AQ) + kelly_section(AK, AQ) + data_section() + glossary_section())
 
 # ── 데이터 신선도 배지 ──
 _DATA_ASOF = _d.dropna(how='all').index[-1]              # KRX 일별 마지막 거래일
@@ -2505,6 +2778,14 @@ body{{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#182236 0%,va
 .sk-d{{font-size:10.5px;color:#b9c4d4;font-family:var(--mono);line-height:1.55;margin-left:auto;text-align:right}}
 .slink{{color:#6cb6e8}}
 .kcols{{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:16px 0}}
+.kapp .ka-row{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;margin:7px 0}}
+.kapp .ka-row input[type=range]{{flex:1;min-width:90px;accent-color:#5aa469}}
+.kapp .ka-row b{{font-family:var(--mono);min-width:36px;text-align:right}}
+.kapp .ka-out{{margin-top:10px;padding:10px 12px;background:#101725;border:1px solid var(--line);
+  border-radius:9px;font-size:11.5px;line-height:1.7}}
+.kapp .ka-out b{{font-family:var(--mono)}}
+.kapp .ka-big{{font-size:13px;margin-top:3px}}
+.kapp .ka-big b{{font-size:22px}}
 @media(max-width:700px){{.kcols{{grid-template-columns:1fr}}}}
 .kb{{background:#101725;border:1px solid var(--line);border-radius:11px;padding:15px 16px}}
 .kb-h{{font-size:14px;font-weight:700;margin-bottom:8px}}
@@ -3038,6 +3319,8 @@ async function doUpdate(){{
 function toggleK(){{const w=document.getElementById('kWrap');
   w.style.display=w.style.display==='none'?'block':'none';}}
 function toggleSE(){{const w=document.getElementById('seWrap');
+  if(w) w.style.display=w.style.display==='none'?'block':'none';}}
+function togglePA(){{const w=document.getElementById('paWrap');
   if(w) w.style.display=w.style.display==='none'?'block':'none';}}
 // 계절 대시보드 파일명이 로컬(season_dashboard.html)과 웹(docs/season.html)에서 다르다.
 // 웹 배포본은 index.html 이므로, 파일명이 dashboard.html 이면 로컬로 판단해 링크를 바꾼다.
