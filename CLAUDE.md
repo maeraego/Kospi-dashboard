@@ -350,6 +350,9 @@
 - `update_all.py` — 전체 수집+빌드
 - `check_weights.py` — IC vs 가중 비교 (가장 자주 씀)
 - `check_lookahead.py` — 발표시차 미반영(룩어헤드) 영향 측정
+- `check_trend.py` — 이평 추세추종(MA20/40/60) 단독 성과·켈리 레버리지, `--full`이면 레짐·계절 결합.
+  (2026-11-26 실측: 코스피 MA40 CAGR 11.7%/MDD −33% vs 보유 5.2%/−72%, 단 2011~는 수익 동일·MDD만 절반.
+  켈리 L*≈3배지만 성장곡선이 평평해 ½켈리 1.3~1.5배 권장. 종합점수엔 넣지 않음 — 대시보드는 12개월 지평)
 - `check_tails.py` — 꼬리 두께 진단(빈도별 첨도·Hill α), 켈리 3방식 비교, z스코어 std vs 로버스트
 - `check_newsig.py` — 신규 후보 신호의 IC·CCF·중복도 판정 (`cand` 딕셔너리에 추가만 하면 됨)
 - `backfill_proj_history.py` — 예측 이력 과거분 재구성 (기본 24개월, 인자로 조정)
