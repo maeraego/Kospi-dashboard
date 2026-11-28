@@ -237,7 +237,10 @@ FMT_WON = lambda v: f'{v:,.0f}원'
 FMT_1   = lambda v: f'{v:.1f}'
 FMT_2   = lambda v: f'{v:.2f}'
 FMT_ROE = lambda v: f'{v:.1f}%'
-FMT_YOY = lambda v: f'{v*100:+.0f}%'
+FMT_YOY = lambda v: f'{v*100:+.0f}%'      # 소수 입력(0.61 → +61%)
+# 이미 %단위인 증가율용. FMT_YOY를 쓰면 ×100이 한 번 더 걸려 5.6%가 +563%로 찍힌다
+# (M2 증가율은 signals_for에서 pct_change×100으로 만들어진다). 2026-11-28 수정.
+FMT_YOYP = lambda v: f'{v:+.1f}%'
 FMT_RATE = lambda v: f'{v:.2f}%'
 
 def signals_for(idx):
@@ -308,7 +311,7 @@ def signals_for(idx):
         ('국채10년(韓)',   df['국고채10년'],           -1, FMT_RATE, ('고금리', '저금리')),
         ('기준금리 YoY(韓)', _basey,                   -1, FMT_PP,  ('인상', '인하')),
         ('기준금리(韓)',   df['기준금리'],             -1, FMT_RATE, ('고금리', '저금리')),
-        ('M2 증가율(YoY)', _m2y,                      +1, FMT_YOY, ('유동성 확대', '긴축')),
+        ('M2 증가율(YoY)', _m2y,                      +1, FMT_YOYP, ('유동성 확대', '긴축')),
         ('M2/M1 비율',    _m21,                       -1, FMT_2,   ('자금 위축', '자금 활발')),
         ('시가총액/M2',    _mc_m2,                     -1, FMT_2,   ('통화대비 고평가', '통화대비 저평가')),
     ]
